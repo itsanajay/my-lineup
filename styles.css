@@ -55,7 +55,7 @@ button { font: inherit; color: inherit; }
   letter-spacing: 1px;
   white-space: nowrap;
 }
-.top-date { font-family: var(--pixel); font-size: 22px; text-align: right; white-space: nowrap; }
+.top-date { font-family: var(--pixel); font-size: 22px; text-align: right; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 #view { flex: 1; overflow-y: auto; padding-bottom: 16px; }
 
@@ -148,6 +148,7 @@ button { font: inherit; color: inherit; }
   font-size: 22px;
   color: var(--yellow);
   white-space: nowrap;
+  overflow: hidden;
 }
 .cell, .cell-empty {
   width: var(--slot);
@@ -180,6 +181,17 @@ button { font: inherit; color: inherit; }
 .selected .when { font-size: 13px; font-weight: 700; letter-spacing: 1px; }
 .selected .title { font-size: 24px; font-weight: 700; line-height: 1; }
 .selected .ep { font-size: 15px; font-weight: 600; }
+.selected .pattern {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--navy);
+  color: var(--yellow);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
 
 /* Sections */
 .section { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
@@ -198,6 +210,7 @@ button { font: inherit; color: inherit; }
 }
 .shelf-card .t { font-size: 16px; font-weight: 700; line-height: 1.05; }
 .shelf-card .s { font-size: 13px; color: var(--muted); }
+.shelf-card .p { font-size: 12px; font-weight: 700; letter-spacing: .5px; color: var(--green); }
 .shelf-card .d { font-family: var(--pixel); font-size: 18px; color: var(--yellow); }
 .shelf-card .d.tba { color: var(--muted); }
 
@@ -222,6 +235,7 @@ button { font: inherit; color: inherit; }
 .item .info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .item .t { font-size: 19px; font-weight: 700; line-height: 1.05; }
 .item .s { font-size: 14px; color: var(--muted); }
+.item .pattern { color: var(--green); font-weight: 700; letter-spacing: .5px; }
 .item .n { font-family: var(--pixel); font-size: 18px; color: var(--yellow); }
 
 .btn {
