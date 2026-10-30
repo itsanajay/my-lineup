@@ -54,7 +54,7 @@ button { font: inherit; color: inherit; }
   gap: 10px;
   color: var(--yellow);
   font-family: var(--pixel);
-  font-size: 34px;
+  font-size: 30px;
   line-height: 1;
   letter-spacing: 1px;
   white-space: nowrap;
