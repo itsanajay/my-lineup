@@ -166,6 +166,45 @@ function epCode(eps) {
   return 'S' + first.season + ' · E' + first.number + '–' + last.number;
 }
 
+// How a season comes out, read from its episode dates: one date for the whole
+// season is a binge drop, a few dates is a split season, otherwise the gap
+// between dates gives daily or weekly.
+function seasonPattern(eps) {
+  const dated = eps.filter((ep) => ep.airdate);
+  const dates = [...new Set(dated.map((ep) => ep.airdate))].sort();
+  if (dated.length < 2) return null;
+  if (dates.length === 1) return 'ALL AT ONCE';
+  if (dates.length <= 4 && dated.length / dates.length >= 2) return 'IN ' + dates.length + ' PARTS';
+  const gaps = dates.slice(1).map((d, i) => Math.round((parseYmd(d) - parseYmd(dates[i])) / 86400000)).sort((a, b) => a - b);
+  const gap = gaps[Math.floor(gaps.length / 2)];
+  if (gap <= 3) return 'DAILY';
+  if (gap >= 5 && gap <= 9) {
+    const counts = {};
+    dates.forEach((d) => { const w = parseYmd(d).getDay(); counts[w] = (counts[w] || 0) + 1; });
+    const day = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+    return 'WEEKLY · ' + LONG_DAYS[day] + 'S';
+  }
+  return null;
+}
+
+// Uses the upcoming season when enough of it is dated, else the latest season
+// with dates, marked as last season's pattern.
+function releasePattern(show) {
+  const eps = episodesOf(show);
+  if (!eps.length) return null;
+  const next = nextEpisode(show);
+  const seasons = [...new Set(eps.map((ep) => ep.season))].sort((a, b) => b - a);
+  const current = next ? next.season : seasons[0];
+  const now = seasonPattern(eps.filter((ep) => ep.season === current));
+  if (now) return now;
+  for (const season of seasons) {
+    if (season >= current) continue;
+    const before = seasonPattern(eps.filter((ep) => ep.season === season));
+    if (before) return 'LAST SEASON: ' + before;
+  }
+  return null;
+}
+
 // Shows with nothing in the next week wait on the "Returning soon" shelf
 // and move back into the guide once a new episode is dated.
 function returningSoon() {
@@ -188,7 +227,7 @@ function returningSoon() {
         when = 'ENDED';
       }
       const season = next ? 'Season ' + next.season : show.status === 'Ended' ? 'Series over' : 'Next season';
-      return { name: show.name, season, when, tba, sort: next && next.airdate ? next.airdate : '9999' };
+      return { name: show.name, season, when, tba, pattern: releasePattern(show), sort: next && next.airdate ? next.airdate : '9999' };
     })
     .sort((a, b) => a.sort.localeCompare(b.sort));
 }
@@ -215,6 +254,7 @@ function guideFor(day) {
         title: show.name,
         code: epCode(eps),
         epName: eps.length === 1 ? eps[0].name : eps.length + ' episodes',
+        pattern: releasePattern(show),
       });
     });
   });
@@ -297,6 +337,7 @@ function renderGuide() {
         <span class="when">NEW ON ${esc(picked.channel.toUpperCase())} · ${DAY_NAMES[dayDate.getDay()]}${picked.slot === 'new' ? '' : ' ' + slotLabel(picked.slot)}</span>
         <span class="title">${esc(picked.title)}</span>
         <span class="ep">${esc(picked.code)}${picked.epName ? ' · ' + esc(picked.epName) : ''}</span>
+        ${picked.pattern ? `<span class="pattern">${esc(picked.pattern)}</span>` : ''}
       </section>`
     : `<section class="selected" aria-label="Selected show">
         <span class="when">${LONG_DAYS[dayDate.getDay()]}</span>
@@ -308,7 +349,7 @@ function renderGuide() {
     ? `<section class="section" aria-label="Returning soon">
         <div class="section-title">RETURNING SOON</div>
         <div class="shelf">${shelf.map((s) => `
-          <div class="shelf-card"><span class="t">${esc(s.name)}</span><span class="s">${esc(s.season)}</span>
+          <div class="shelf-card"><span class="t">${esc(s.name)}</span><span class="s">${esc(s.season)}</span>${s.pattern ? `<span class="p">${esc(s.pattern)}</span>` : ''}
           <span class="d${s.tba ? ' tba' : ''}">${esc(s.when)}</span></div>`).join('')}</div>
       </section>`
     : '';
@@ -360,6 +401,7 @@ function renderShows() {
         <span class="t">${esc(s.name)}</span>
         <span class="s">${esc(s.channel)}</span>
         <span class="n">${esc(showStatus(show))}</span>
+        ${show && releasePattern(show) ? `<span class="s pattern">${esc(releasePattern(show))}</span>` : ''}
       </div>
       <button type="button" class="btn ghost" data-action="remove" data-id="${s.id}" aria-label="Remove ${esc(s.name)}">REMOVE</button>
     </div>`;
