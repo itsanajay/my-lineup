@@ -6,6 +6,8 @@ const API = 'https://api.tvmaze.com';
 const SHOWS_KEY = 'lineup.shows';
 const CACHE_PREFIX = 'lineup.cache.';
 const CACHE_MS = 6 * 60 * 60 * 1000;
+const POOL_KEY = 'lineup.pool';
+const POOL_MS = 12 * 60 * 60 * 1000;
 const PRIME_TIME = [20, 21, 22];
 const DAY_NAMES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 const LONG_DAYS = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
@@ -23,6 +25,8 @@ const state = {
   results: null,
   searching: false,
   searchError: false,
+  pool: null,        // shows with new episodes this week, used for suggestions
+  poolLoading: false,
 };
 
 // ---------- storage ----------
@@ -286,6 +290,124 @@ function guideFor(day) {
   return { slots, rows, entries };
 }
 
+// ---------- suggestions ----------
+
+// Keep just what search results and suggestions need, so the cache stays small.
+function slimShow(show) {
+  return {
+    id: show.id,
+    name: show.name,
+    genres: show.genres || [],
+    language: show.language,
+    network: show.network ? { name: show.network.name } : null,
+    webChannel: show.webChannel ? { name: show.webChannel.name } : null,
+    premiered: show.premiered,
+    status: show.status,
+    image: show.image ? { medium: show.image.medium } : null,
+    rating: show.rating && show.rating.average ? show.rating.average : 0,
+  };
+}
+
+// Everything with a new episode in the coming week (streaming plus US TV)
+// is the pool that "Suggested for you" and "More like this" pick from.
+async function loadPool() {
+  const cached = readJSON(POOL_KEY, null);
+  if (cached && Date.now() - cached.at < POOL_MS) {
+    state.pool = cached.shows;
+    return;
+  }
+  if (state.poolLoading) return;
+  state.poolLoading = true;
+  const paths = [];
+  for (let i = 0; i < 7; i++) {
+    const date = ymd(addDays(new Date(), i));
+    paths.push('/schedule/web?date=' + date, '/schedule?country=US&date=' + date);
+  }
+  const byId = {};
+  for (let i = 0; i < paths.length; i += 4) {
+    const loaded = await Promise.allSettled(paths.slice(i, i + 4).map(getJSON));
+    loaded.forEach((r) => {
+      if (r.status !== 'fulfilled') return;
+      r.value.forEach((ep) => {
+        const show = ep.show || (ep._embedded && ep._embedded.show);
+        if (show && show.language === 'English') byId[show.id] = slimShow(show);
+      });
+    });
+  }
+  state.pool = Object.values(byId);
+  state.poolLoading = false;
+  if (state.pool.length) writeJSON(POOL_KEY, { at: Date.now(), shows: state.pool });
+  render();
+}
+
+// Shared genres count most, then the same service, then the show's rating.
+function rankLike(genreCounts, channels, exclude, limit) {
+  return (state.pool || [])
+    .filter((show) => !exclude.has(show.id))
+    .map((show) => {
+      const overlap = show.genres.reduce((n, g) => n + (genreCounts[g] || 0), 0);
+      const score = overlap * 3 + (channels.has(channelOf(show)) ? 1 : 0) + show.rating / 10;
+      return { show, overlap, score };
+    })
+    .filter((x) => x.overlap > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((x) => x.show);
+}
+
+function suggestedForYou() {
+  const tracked = myShows();
+  const genreCounts = {};
+  const channels = new Set();
+  tracked.forEach((s) => {
+    const show = state.details[s.id];
+    if (!show) return;
+    (show.genres || []).forEach((g) => { genreCounts[g] = (genreCounts[g] || 0) + 1; });
+    channels.add(channelOf(show));
+  });
+  return rankLike(genreCounts, channels, new Set(tracked.map((s) => s.id)), 8);
+}
+
+function moreLike(show, exclude) {
+  const genreCounts = {};
+  (show.genres || []).forEach((g) => { genreCounts[g] = 1; });
+  return rankLike(genreCounts, new Set([channelOf(show)]), exclude, 6);
+}
+
+function editDistance(a, b) {
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cur = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+  }
+  return row[b.length];
+}
+
+// For a search with no results: titles this week that are a typo or two away.
+function didYouMean(q) {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  return (state.pool || [])
+    .map((show) => {
+      const nameWords = show.name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      const cost = words.reduce((sum, w) => {
+        // Compare against the start of each title word, allowing a letter missed or added.
+        const best = Math.min(...nameWords.flatMap((n) => [-1, 0, 1].map((d) => editDistance(w, n.slice(0, Math.max(w.length + d, 1))))));
+        return sum + best;
+      }, 0);
+      return { show, cost };
+    })
+    .filter((x) => x.cost <= Math.max(1, Math.floor(q.length / 5)))
+    .sort((a, b) => a.cost - b.cost || b.show.rating - a.show.rating)
+    .slice(0, 5)
+    .map((x) => x.show);
+}
+
 // ---------- rendering ----------
 
 function esc(s) {
@@ -410,31 +532,58 @@ function renderShows() {
     <p class="hint">Show data from <a href="https://www.tvmaze.com" style="color: var(--yellow)">TVmaze</a>.</p></section>`;
 }
 
+function showItem(show, tracked) {
+  const added = tracked.has(show.id);
+  const year = show.premiered ? show.premiered.slice(0, 4) : '';
+  const img = show.image && show.image.medium
+    ? `<img src="${esc(show.image.medium)}" alt="" loading="lazy">`
+    : '<div class="poster" aria-hidden="true"></div>';
+  const genres = (show.genres || []).slice(0, 2).join(', ');
+  return `<div class="item">
+    ${img}
+    <div class="info">
+      <span class="t">${esc(show.name)}</span>
+      <span class="s">${esc(channelOf(show))}${year ? ' · ' + year : ''}${show.status ? ' · ' + esc(show.status) : ''}</span>
+      ${genres ? `<span class="s">${esc(genres)}</span>` : ''}
+    </div>
+    <button type="button" class="btn${added ? ' ghost' : ''}" data-action="add" data-id="${show.id}" ${added ? 'disabled' : ''}>${added ? 'ADDED' : '+ ADD'}</button>
+  </div>`;
+}
+
+function showList(title, shows, tracked) {
+  if (!shows.length) return '';
+  return `<div class="section-title" style="margin-top: 12px">${esc(title)}</div>
+    <div class="list">${shows.map((show) => showItem(show, tracked)).join('')}</div>`;
+}
+
+function renderSuggested(tracked) {
+  if (!myShows().length) return '';
+  if (!state.pool) return '<p class="hint">Finding shows you might like…</p>';
+  const picks = suggestedForYou();
+  if (!picks.length) return '';
+  return showList('SUGGESTED FOR YOU', picks, tracked) +
+    '<p class="hint">Based on the shows you follow, with new episodes this week.</p>';
+}
+
 function renderSearch() {
   const tracked = new Set(myShows().map((s) => s.id));
   let results = '';
-  if (state.searching) {
+  if (!state.query.trim()) {
+    results = renderSuggested(tracked);
+  } else if (state.searching) {
     results = '<p class="hint">Searching…</p>';
   } else if (state.searchError) {
     results = '<p class="hint error">Search isn\'t working right now. Check your connection and try again.</p>';
   } else if (state.results && !state.results.length) {
-    results = '<p class="hint">No shows found. Try a different spelling.</p>';
+    const guesses = didYouMean(state.query);
+    results = guesses.length
+      ? showList('DID YOU MEAN', guesses, tracked)
+      : '<p class="hint">No shows found. Try a different spelling.</p>';
   } else if (state.results) {
-    results = '<div class="list">' + state.results.map(({ show }) => {
-      const added = tracked.has(show.id);
-      const year = show.premiered ? show.premiered.slice(0, 4) : '';
-      const img = show.image && show.image.medium
-        ? `<img src="${esc(show.image.medium)}" alt="" loading="lazy">`
-        : '<div class="poster" aria-hidden="true"></div>';
-      return `<div class="item">
-        ${img}
-        <div class="info">
-          <span class="t">${esc(show.name)}</span>
-          <span class="s">${esc(channelOf(show))}${year ? ' · ' + year : ''}${show.status ? ' · ' + esc(show.status) : ''}</span>
-        </div>
-        <button type="button" class="btn${added ? ' ghost' : ''}" data-action="add" data-id="${show.id}" ${added ? 'disabled' : ''}>${added ? 'ADDED' : '+ ADD'}</button>
-      </div>`;
-    }).join('') + '</div>';
+    const shows = state.results.map((r) => r.show);
+    const exclude = new Set([...tracked, ...shows.map((show) => show.id)]);
+    results = '<div class="list">' + shows.map((show) => showItem(show, tracked)).join('') + '</div>' +
+      showList('MORE LIKE ' + shows[0].name.toUpperCase(), moreLike(shows[0], exclude), tracked);
   }
   return `
     <section class="section">
@@ -479,6 +628,19 @@ function render() {
 let searchTimer = null;
 let searchSeq = 0;
 
+// TVmaze only matches whole words, so while the last word is half typed
+// ("abbott elem"), search the finished words and keep titles that match every prefix.
+async function searchShows(q) {
+  const results = await getJSON('/search/shows?q=' + encodeURIComponent(q));
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (results.length || words.length < 2) return results;
+  const broader = await getJSON('/search/shows?q=' + encodeURIComponent(words.slice(0, -1).join(' ')));
+  return broader.filter(({ show }) => {
+    const nameWords = show.name.toLowerCase().split(/[^a-z0-9]+/);
+    return words.every((w) => nameWords.some((n) => n.startsWith(w)));
+  });
+}
+
 async function runSearch(q) {
   state.query = q;
   if (!q.trim()) {
@@ -486,12 +648,13 @@ async function runSearch(q) {
     render();
     return;
   }
+  if (!state.pool) loadPool();
   const seq = ++searchSeq;
   state.searching = true;
   state.searchError = false;
   render();
   try {
-    const results = await getJSON('/search/shows?q=' + encodeURIComponent(q.trim()));
+    const results = await searchShows(q.trim());
     if (seq !== searchSeq) return;
     state.results = results;
   } catch (e) {
@@ -503,11 +666,11 @@ async function runSearch(q) {
 }
 
 async function addShow(id) {
-  const hit = (state.results || []).find((r) => r.show.id === id);
-  if (!hit) return;
+  const found = (state.results || []).map((r) => r.show).concat(state.pool || []).find((show) => show.id === id);
+  if (!found) return;
   const list = myShows();
   if (list.some((s) => s.id === id)) return;
-  list.push({ id, name: hit.show.name, channel: channelOf(hit.show) });
+  list.push({ id, name: found.name, channel: channelOf(found) });
   saveMyShows(list);
   render();
   try {
@@ -532,6 +695,7 @@ document.addEventListener('click', (ev) => {
   if (action === 'tab') {
     state.tab = el.dataset.tab;
     render();
+    if (state.tab === 'search' && !state.pool) loadPool();
   } else if (action === 'day') {
     state.day = el.dataset.day;
     state.picked = null;
