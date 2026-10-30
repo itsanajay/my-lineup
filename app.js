@@ -866,3 +866,7 @@ refreshAll();
 
 // iPhone Safari ignores user-scalable=no in the browser, so block pinch zoom here too.
 document.addEventListener('gesturestart', (ev) => ev.preventDefault());
+
+if ('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
