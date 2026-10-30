@@ -863,3 +863,6 @@ document.addEventListener('submit', (ev) => {
 
 render();
 refreshAll();
+
+// iPhone Safari ignores user-scalable=no in the browser, so block pinch zoom here too.
+document.addEventListener('gesturestart', (ev) => ev.preventDefault());
