@@ -860,3 +860,7 @@ document.addEventListener('submit', (ev) => {
 
 render();
 refreshAll();
+
+if ('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
