@@ -479,6 +479,19 @@ function render() {
 let searchTimer = null;
 let searchSeq = 0;
 
+// TVmaze only matches whole words, so while the last word is half typed
+// ("abbott elem"), search the finished words and keep titles that match every prefix.
+async function searchShows(q) {
+  const results = await getJSON('/search/shows?q=' + encodeURIComponent(q));
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (results.length || words.length < 2) return results;
+  const broader = await getJSON('/search/shows?q=' + encodeURIComponent(words.slice(0, -1).join(' ')));
+  return broader.filter(({ show }) => {
+    const nameWords = show.name.toLowerCase().split(/[^a-z0-9]+/);
+    return words.every((w) => nameWords.some((n) => n.startsWith(w)));
+  });
+}
+
 async function runSearch(q) {
   state.query = q;
   if (!q.trim()) {
@@ -491,7 +504,7 @@ async function runSearch(q) {
   state.searchError = false;
   render();
   try {
-    const results = await getJSON('/search/shows?q=' + encodeURIComponent(q.trim()));
+    const results = await searchShows(q.trim());
     if (seq !== searchSeq) return;
     state.results = results;
   } catch (e) {
