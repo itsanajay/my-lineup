@@ -7,6 +7,7 @@ const SHOWS_KEY = 'lineup.shows';
 const CACHE_PREFIX = 'lineup.cache.';
 const CACHE_MS = 6 * 60 * 60 * 1000;
 const POOL_KEY = 'lineup.pool';
+const SUBS_KEY = 'lineup.subs';
 const POOL_MS = 12 * 60 * 60 * 1000;
 const PRIME_TIME = [20, 21, 22];
 const DAY_NAMES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
@@ -259,6 +260,7 @@ function guideFor(day) {
         code: epCode(eps),
         epName: eps.length === 1 ? eps[0].name : eps.length + ' episodes',
         pattern: releasePattern(show),
+        show,
       });
     });
   });
@@ -408,6 +410,87 @@ function didYouMean(q) {
     .map((x) => x.show);
 }
 
+// ---------- where to watch ----------
+
+// An add-on whose id names another service (a Prime channel, a Disney+ bundle)
+// gives you that service too.
+const SERVICES = [
+  { id: 'netflix', name: 'Netflix', aliases: ['Netflix'], addons: [] },
+  { id: 'hulu', name: 'Hulu', aliases: ['Hulu', 'FX on Hulu'], addons: [{ id: 'live', label: 'Live TV' }] },
+  { id: 'max', name: 'Max', aliases: ['Max', 'HBO Max', 'HBO'], addons: [] },
+  {
+    id: 'prime', name: 'Prime Video', aliases: ['Prime Video', 'Amazon Prime Video', 'Amazon', 'Amazon Freevee'],
+    addons: [
+      { id: 'max', label: 'Max channel' },
+      { id: 'paramount', label: 'Paramount+ channel' },
+      { id: 'apple', label: 'Apple TV+ channel' },
+      { id: 'peacock', label: 'Peacock channel' },
+    ],
+  },
+  { id: 'disney', name: 'Disney+', aliases: ['Disney+'], addons: [{ id: 'hulu', label: 'Hulu bundle' }, { id: 'max', label: 'Max bundle' }] },
+  { id: 'apple', name: 'Apple TV+', aliases: ['Apple TV+', 'Apple TV'], addons: [] },
+  { id: 'peacock', name: 'Peacock', aliases: ['Peacock'], addons: [] },
+  { id: 'paramount', name: 'Paramount+', aliases: ['Paramount+', 'CBS All Access', 'Showtime'], addons: [] },
+];
+
+// Where a TV network's shows usually stream the next day. Approximate: deals change.
+const NEXT_DAY = {
+  ABC: 'hulu', FOX: 'hulu', FX: 'hulu', FXX: 'hulu',
+  NBC: 'peacock', Bravo: 'peacock', 'USA Network': 'peacock',
+  CBS: 'paramount', 'Comedy Central': 'paramount', MTV: 'paramount', Nickelodeon: 'paramount',
+  'Adult Swim': 'max', 'Cartoon Network': 'max', TLC: 'max', HGTV: 'max', 'Food Network': 'max', Discovery: 'max',
+};
+const BROADCAST = ['ABC', 'FOX', 'NBC', 'CBS'];
+
+function mySubs() {
+  return readJSON(SUBS_KEY, { services: {}, addons: {} });
+}
+
+// The label of what gives you a service: your own plan, or an add-on on another one.
+function accessTo(serviceId, subs) {
+  if (subs.services[serviceId]) return { via: '' };
+  for (const svc of SERVICES) {
+    if (!subs.services[svc.id]) continue;
+    const addon = svc.addons.find((a) => a.id === serviceId && subs.addons[svc.id + ':' + a.id]);
+    if (addon) return { via: svc.name + ' ' + addon.label };
+  }
+  return null;
+}
+
+// Uses the show's home service from TVmaze, not every place it streams.
+function watchInfo(show) {
+  const channel = channelOf(show);
+  let svc = SERVICES.find((s) => s.aliases.includes(channel));
+  let note = svc ? 'On ' + svc.name : '';
+  if (!svc && NEXT_DAY[channel]) {
+    svc = SERVICES.find((s) => s.id === NEXT_DAY[channel]);
+    note = 'Airs on ' + channel + ' · streams next day on ' + svc.name;
+  }
+  if (!svc) return null;
+  const subs = mySubs();
+  if (!Object.values(subs.services).some(Boolean)) return { note, have: null };
+  let access = accessTo(svc.id, subs);
+  if (!access && BROADCAST.includes(channel) && subs.services.hulu && subs.addons['hulu:live']) {
+    access = { via: 'Hulu Live TV' };
+  }
+  return {
+    note,
+    have: !!access,
+    label: access ? '✓ YOU HAVE IT' + (access.via ? ' · VIA ' + access.via.toUpperCase() : '') : '✕ NOT IN YOUR SUBS',
+  };
+}
+
+function watchHtml(show) {
+  const info = show ? watchInfo(show) : null;
+  if (!info) return '';
+  const badge = info.have === null ? '' : `<span class="watch ${info.have ? 'yes' : 'no'}">${esc(info.label)}</span>`;
+  return badge + `<span class="watch-note">${esc(info.note)}</span>`;
+}
+
+function saveSubs(subs) {
+  writeJSON(SUBS_KEY, subs);
+}
+
 // ---------- rendering ----------
 
 function esc(s) {
@@ -460,6 +543,7 @@ function renderGuide() {
         <span class="title">${esc(picked.title)}</span>
         <span class="ep">${esc(picked.code)}${picked.epName ? ' · ' + esc(picked.epName) : ''}</span>
         ${picked.pattern ? `<span class="pattern">${esc(picked.pattern)}</span>` : ''}
+        ${watchHtml(picked.show)}
       </section>`
     : `<section class="selected" aria-label="Selected show">
         <span class="when">${LONG_DAYS[dayDate.getDay()]}</span>
@@ -523,6 +607,7 @@ function renderShows() {
         <span class="t">${esc(s.name)}</span>
         <span class="s">${esc(s.channel)}</span>
         <span class="n">${esc(showStatus(show))}</span>
+        ${watchHtml(show)}
         ${show && releasePattern(show) ? `<span class="s pattern">${esc(releasePattern(show))}</span>` : ''}
       </div>
       <button type="button" class="btn ghost" data-action="remove" data-id="${s.id}" aria-label="Remove ${esc(s.name)}">REMOVE</button>
@@ -545,6 +630,7 @@ function showItem(show, tracked) {
       <span class="t">${esc(show.name)}</span>
       <span class="s">${esc(channelOf(show))}${year ? ' · ' + year : ''}${show.status ? ' · ' + esc(show.status) : ''}</span>
       ${genres ? `<span class="s">${esc(genres)}</span>` : ''}
+      ${watchHtml(show)}
     </div>
     <button type="button" class="btn${added ? ' ghost' : ''}" data-action="add" data-id="${show.id}" ${added ? 'disabled' : ''}>${added ? 'ADDED' : '+ ADD'}</button>
   </div>`;
@@ -598,12 +684,42 @@ function renderSearch() {
     </section>`;
 }
 
+function renderSubs() {
+  const subs = mySubs();
+  const count = SERVICES.filter((s) => subs.services[s.id]).length;
+  const cards = SERVICES.map((svc) => {
+    const on = !!subs.services[svc.id];
+    const addons = on && svc.addons.length
+      ? `<div class="addons"><span class="cap">ADD-ONS</span>${svc.addons.map((a) => {
+        const key = svc.id + ':' + a.id;
+        const aOn = !!subs.addons[key];
+        return `<button type="button" class="chip" aria-pressed="${aOn}" data-action="addon" data-key="${key}">${aOn ? '✓' : '+'} ${esc(a.label)}</button>`;
+      }).join('')}</div>`
+      : '';
+    return `<div class="sub${on ? ' on' : ''}">
+      <button type="button" class="sub-toggle" aria-pressed="${on}" data-action="sub" data-id="${svc.id}">
+        <span class="sub-name">${esc(svc.name.toUpperCase())}</span>
+        <span class="sub-pill">${on ? 'I HAVE IT' : 'ADD'}</span>
+      </button>
+      ${addons}
+    </div>`;
+  }).join('');
+  return `<section class="section">
+    <div class="section-title">MY SUBSCRIPTIONS</div>
+    <p class="hint">Tap the services you pay for, then any add-ons. Search and your guide will show what you can already watch.</p>
+    <div class="section-title" style="font-size: 20px">${count} OF ${SERVICES.length} SERVICES</div>
+    <div class="list">${cards}</div>
+    <p class="hint">"Where to watch" uses each show's home service, so a show may also stream in other places.</p>
+  </section>`;
+}
+
 function render() {
   const view = document.getElementById('view');
   const hadFocus = document.activeElement && document.activeElement.id === 'q';
   const caret = hadFocus ? document.activeElement.selectionStart : null;
 
-  view.innerHTML = state.tab === 'guide' ? renderGuide() : state.tab === 'shows' ? renderShows() : renderSearch();
+  const views = { guide: renderGuide, shows: renderShows, search: renderSearch, subs: renderSubs };
+  view.innerHTML = views[state.tab]();
 
   document.querySelectorAll('.tabs button').forEach((b) => {
     if (b.dataset.tab === state.tab) b.setAttribute('aria-current', 'page');
@@ -712,6 +828,16 @@ document.addEventListener('click', (ev) => {
     render();
   } else if (action === 'add') {
     addShow(Number(el.dataset.id));
+  } else if (action === 'sub') {
+    const subs = mySubs();
+    subs.services[el.dataset.id] = !subs.services[el.dataset.id];
+    saveSubs(subs);
+    render();
+  } else if (action === 'addon') {
+    const subs = mySubs();
+    subs.addons[el.dataset.key] = !subs.addons[el.dataset.key];
+    saveSubs(subs);
+    render();
   } else if (action === 'remove') {
     removeShow(Number(el.dataset.id));
   }

@@ -62,7 +62,7 @@ button { font: inherit; color: inherit; }
 /* Bottom tabs */
 .tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-top: 3px solid var(--yellow);
   background: var(--navy-2);
   padding-bottom: env(safe-area-inset-bottom);
@@ -80,6 +80,7 @@ button { font: inherit; color: inherit; }
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 1px;
+  white-space: nowrap;
   cursor: pointer;
 }
 .tabs button[aria-current="page"] { color: var(--yellow); }
@@ -291,5 +292,56 @@ label.cap { font-size: 14px; font-weight: 700; letter-spacing: 1px; color: var(-
 }
 .empty .big { font-family: var(--pixel); font-size: 28px; color: var(--yellow); line-height: 1; }
 .error { color: #ffb3a1; }
+
+/* Where to watch */
+.watch { font-size: 14px; font-weight: 700; letter-spacing: .5px; }
+.watch.yes { color: var(--green); }
+.watch.no { color: #ffb3a1; }
+.watch-note { font-size: 13px; color: var(--muted); }
+.selected .watch, .selected .watch-note { color: var(--navy); }
+
+/* My subscriptions */
+.sub {
+  border-radius: 4px;
+  border: 2px solid var(--blue-cell);
+  background: var(--navy-2);
+}
+.sub.on { border-color: var(--yellow); background: var(--blue); }
+.sub-toggle {
+  width: 100%;
+  min-height: 52px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  text-align: left;
+}
+.sub-name { font-size: 19px; font-weight: 700; letter-spacing: .5px; }
+.sub-pill {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  border-radius: 3px;
+  padding: 3px 10px;
+  border: 2px solid var(--line);
+  color: var(--muted);
+}
+.sub.on .sub-pill { background: var(--yellow); border-color: var(--yellow); color: var(--navy); }
+.addons { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 12px; }
+.addons .cap { width: 100%; font-size: 13px; }
+.chip {
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 22px;
+  border: 2px solid var(--line);
+  background: none;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chip[aria-pressed="true"] { background: var(--green); border-color: var(--green); color: var(--navy); }
 
 :focus-visible { outline: 3px solid var(--yellow); outline-offset: 2px; }
