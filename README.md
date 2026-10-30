@@ -8,6 +8,15 @@ A retro TV guide for the streaming age. Add the shows you follow and they fill i
 - Show and episode schedules come from the free [TVmaze API](https://www.tvmaze.com/api). No key needed.
 - Your list of shows is saved in your phone's browser, so it stays private to you.
 
+## Put it on your phone
+
+Open the site on your phone, then:
+
+- **iPhone (Safari):** tap the Share button, then **Add to Home Screen**.
+- **Android (Chrome):** tap the ⋮ menu, then **Add to Home screen** or **Install app**.
+
+It opens full screen like a regular app and still works offline with your last loaded guide.
+
 ## Try it
 
 Open `index.html` in a browser, or turn on GitHub Pages (Settings → Pages → Deploy from branch → `main`, folder `/`) and open the link it gives you.

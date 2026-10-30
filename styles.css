@@ -21,6 +21,10 @@
 html, body {
   margin: 0;
   height: 100%;
+  /* Feel like an app: no pinch or double-tap zoom, no rubber-band page bounce. */
+  touch-action: pan-x pan-y;
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
   background: var(--navy);
   color: var(--text);
   font-family: var(--body);

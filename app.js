@@ -452,7 +452,7 @@ function accessTo(serviceId, subs) {
   for (const svc of SERVICES) {
     if (!subs.services[svc.id]) continue;
     const addon = svc.addons.find((a) => a.id === serviceId && subs.addons[svc.id + ':' + a.id]);
-    if (addon) return { via: svc.name + ' ' + addon.label };
+    if (addon) return { via: svc.name + ' ' + addon.label, from: svc.name };
   }
   return null;
 }
@@ -470,7 +470,7 @@ function watchInfo(show) {
   const subs = mySubs();
   if (!Object.values(subs.services).some(Boolean)) return { note, have: null };
   let access = accessTo(svc.id, subs);
-  if (!access && BROADCAST.includes(channel) && subs.services.hulu && subs.addons['hulu:live']) {
+  if (!access && BROADCAST.includes(channel) && accessTo('hulu', subs) && subs.addons['hulu:live']) {
     access = { via: 'Hulu Live TV' };
   }
   return {
@@ -686,20 +686,23 @@ function renderSearch() {
 
 function renderSubs() {
   const subs = mySubs();
-  const count = SERVICES.filter((s) => subs.services[s.id]).length;
+  const count = SERVICES.filter((s) => accessTo(s.id, subs)).length;
   const cards = SERVICES.map((svc) => {
     const on = !!subs.services[svc.id];
-    const addons = on && svc.addons.length
+    // A bundle or channel on another plan counts as having this service.
+    const access = accessTo(svc.id, subs);
+    const covered = !on && !!access;
+    const addons = (on || covered) && svc.addons.length
       ? `<div class="addons"><span class="cap">ADD-ONS</span>${svc.addons.map((a) => {
         const key = svc.id + ':' + a.id;
         const aOn = !!subs.addons[key];
         return `<button type="button" class="chip" aria-pressed="${aOn}" data-action="addon" data-key="${key}">${aOn ? '✓' : '+'} ${esc(a.label)}</button>`;
       }).join('')}</div>`
       : '';
-    return `<div class="sub${on ? ' on' : ''}">
+    return `<div class="sub${on || covered ? ' on' : ''}">
       <button type="button" class="sub-toggle" aria-pressed="${on}" data-action="sub" data-id="${svc.id}">
         <span class="sub-name">${esc(svc.name.toUpperCase())}</span>
-        <span class="sub-pill">${on ? 'I HAVE IT' : 'ADD'}</span>
+        <span class="sub-pill">${on ? 'I HAVE IT' : covered ? 'VIA ' + esc(access.from.toUpperCase()) : 'ADD'}</span>
       </button>
       ${addons}
     </div>`;
@@ -860,3 +863,10 @@ document.addEventListener('submit', (ev) => {
 
 render();
 refreshAll();
+
+// iPhone Safari ignores user-scalable=no in the browser, so block pinch zoom here too.
+document.addEventListener('gesturestart', (ev) => ev.preventDefault());
+
+if ('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
