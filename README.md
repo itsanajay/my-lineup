@@ -1,4 +1,4 @@
-# My Lineup
+# Local Listings
 
 A retro TV guide for the streaming age. Add the shows you follow and they fill in a classic channel grid on the days new episodes come out. Shows that are between seasons wait on a "Returning soon" shelf and move back into the guide when their next season is dated.
 

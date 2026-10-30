@@ -1,6 +1,6 @@
 {
-  "name": "My Lineup",
-  "short_name": "My Lineup",
+  "name": "Local Listings",
+  "short_name": "Listings",
   "description": "A retro TV guide for the shows you follow.",
   "start_url": "./",
   "scope": "./",

@@ -1,4 +1,4 @@
-// My Lineup: a retro TV guide for the shows you follow.
+// Local Listings: a retro TV guide for the shows you follow.
 // Show and episode data comes from the free TVmaze API (https://www.tvmaze.com/api).
 // Everything the user saves lives in this browser's localStorage.
 
