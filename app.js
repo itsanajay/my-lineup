@@ -8,6 +8,9 @@ const CACHE_PREFIX = 'lineup.cache.';
 const CACHE_MS = 6 * 60 * 60 * 1000;
 const POOL_KEY = 'lineup.pool';
 const SUBS_KEY = 'lineup.subs';
+const TMDB_KEY = 'lineup.tmdbKey';
+const PROV_PREFIX = 'lineup.prov.';
+const PROV_MS = 24 * 60 * 60 * 1000;
 const POOL_MS = 12 * 60 * 60 * 1000;
 const PRIME_TIME = [20, 21, 22];
 const DAY_NAMES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
@@ -26,6 +29,7 @@ const state = {
   results: null,
   searching: false,
   searchError: false,
+  providers: {},     // show id -> US streaming providers from TMDB, or null if none found
   pool: null,        // shows with new episodes this week, used for suggestions
   poolLoading: false,
 };
@@ -307,6 +311,7 @@ function slimShow(show) {
     status: show.status,
     image: show.image ? { medium: show.image.medium } : null,
     rating: show.rating && show.rating.average ? show.rating.average : 0,
+    externals: show.externals ? { imdb: show.externals.imdb, thetvdb: show.externals.thetvdb } : null,
   };
 }
 
@@ -457,8 +462,125 @@ function accessTo(serviceId, subs) {
   return null;
 }
 
-// Uses the show's home service from TVmaze, not every place it streams.
+// ---------- full where-to-watch (personal TMDB key) ----------
+// TMDB's free key is for personal use, so it is never in the code: each person
+// pastes their own, and it stays in their browser.
+
+function tmdbKey() {
+  try {
+    return localStorage.getItem(TMDB_KEY) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+const providerLoads = {};
+
+async function tmdb(path, key) {
+  const sep = path.includes('?') ? '&' : '?';
+  const res = await fetch('https://api.themoviedb.org/3' + path + sep + 'api_key=' + encodeURIComponent(key));
+  if (!res.ok) throw new Error('TMDB ' + res.status);
+  return res.json();
+}
+
+// Looks the show up on TMDB by its IMDb or TheTVDB id (from TVmaze), then reads
+// its US watch providers, which TMDB gets from JustWatch.
+async function fetchProviders(show, key) {
+  const ext = show.externals || {};
+  let tmdbId = null;
+  if (ext.imdb) {
+    const found = await tmdb('/find/' + ext.imdb + '?external_source=imdb_id', key);
+    if (found.tv_results && found.tv_results.length) tmdbId = found.tv_results[0].id;
+  }
+  if (!tmdbId && ext.thetvdb) {
+    const found = await tmdb('/find/' + ext.thetvdb + '?external_source=tvdb_id', key);
+    if (found.tv_results && found.tv_results.length) tmdbId = found.tv_results[0].id;
+  }
+  if (!tmdbId) return null;
+  const data = await tmdb('/tv/' + tmdbId + '/watch/providers', key);
+  const us = (data.results && data.results.US) || {};
+  const names = (list) => (list || []).map((p) => p.provider_name);
+  return {
+    stream: [...new Set([...names(us.flatrate), ...names(us.ads), ...names(us.free)])],
+    buy: [...new Set([...names(us.buy), ...names(us.rent)])],
+  };
+}
+
+function providersFor(show) {
+  const key = tmdbKey();
+  if (!key || !show || !show.externals) return undefined;
+  if (show.id in state.providers) return state.providers[show.id];
+  const cached = readJSON(PROV_PREFIX + show.id, null);
+  if (cached && Date.now() - cached.at < PROV_MS) {
+    state.providers[show.id] = cached.data;
+    return cached.data;
+  }
+  if (!providerLoads[show.id]) {
+    providerLoads[show.id] = fetchProviders(show, key)
+      .then((data) => {
+        state.providers[show.id] = data;
+        writeJSON(PROV_PREFIX + show.id, { at: Date.now(), data });
+      })
+      .catch(() => {
+        state.providers[show.id] = undefined;
+      })
+      .finally(() => {
+        render();
+      });
+  }
+  return undefined;
+}
+
+// Provider names look like "Netflix", "Disney Plus", "Max Amazon Channel".
+// Channels bought through Prime map to their own service, which accessTo()
+// already counts through the Prime add-on.
+const PROVIDER_WORDS = [
+  ['netflix', /netflix/],
+  ['hulu', /hulu/],
+  ['max', /\bmax\b|hbo/],
+  ['paramount', /paramount|showtime/],
+  ['apple', /apple tv/],
+  ['peacock', /peacock/],
+  ['disney', /disney/],
+  ['prime', /amazon prime video|^prime video/],
+];
+
+function serviceForProvider(name) {
+  const n = name.toLowerCase();
+  const hit = PROVIDER_WORDS.find(([, re]) => re.test(n));
+  return hit ? SERVICES.find((s) => s.id === hit[0]) : null;
+}
+
+function fullWatchInfo(providers) {
+  const subs = mySubs();
+  const anySubs = Object.values(subs.services).some(Boolean);
+  const services = [];
+  providers.stream.forEach((name) => {
+    const svc = serviceForProvider(name);
+    if (svc && !services.includes(svc)) services.push(svc);
+  });
+  if (!services.length) {
+    const other = providers.stream.slice(0, 3).join(', ');
+    if (other) return { note: 'Streams on ' + other, have: anySubs ? false : null, label: '✕ NOT IN YOUR SUBS' };
+    if (providers.buy.length) return { note: 'Buy or rent only', have: anySubs ? false : null, label: '$ BUY OR RENT' };
+    return { note: 'Not streaming in the US right now', have: null };
+  }
+  const note = 'Streams on ' + services.map((s) => s.name).join(', ');
+  if (!anySubs) return { note, have: null };
+  const mine = services.map((svc) => ({ svc, access: accessTo(svc.id, subs) })).find((x) => x.access);
+  if (!mine) return { note, have: false, label: '✕ NOT IN YOUR SUBS' };
+  const via = mine.access.via ? ' VIA ' + mine.access.via.toUpperCase() : '';
+  return { note, have: true, label: '✓ YOU HAVE IT · ' + mine.svc.name.toUpperCase() + via };
+}
+
 function watchInfo(show) {
+  const providers = providersFor(show);
+  if (providers) return fullWatchInfo(providers);
+  return homeWatchInfo(show);
+}
+
+// Uses the show's home service from TVmaze, not every place it streams.
+function homeWatchInfo(show) {
   const channel = channelOf(show);
   let svc = SERVICES.find((s) => s.aliases.includes(channel));
   let note = svc ? 'On ' + svc.name : '';
@@ -684,6 +806,23 @@ function renderSearch() {
     </section>`;
 }
 
+function renderTmdbSetup() {
+  const key = tmdbKey();
+  if (key) {
+    return `<div class="section-title" style="margin-top: 12px">FULL WHERE-TO-WATCH: ON</div>
+      <p class="hint">Using your personal TMDB key, saved only on this device. Streaming data from JustWatch via TMDB.</p>
+      <button type="button" class="btn ghost" data-action="tmdb-remove" style="align-self: flex-start">REMOVE KEY</button>`;
+  }
+  return `<div class="section-title" style="margin-top: 12px">FULL WHERE-TO-WATCH</div>
+    <p class="hint">Right now "where to watch" uses each show's home service. Paste a personal TMDB API key to see every service a show streams on. It's saved only on this device.</p>
+    <form class="list" data-action="tmdb-save">
+      <label class="cap" for="tmdb-key">TMDB API KEY</label>
+      <div class="search-box"><input id="tmdb-key" name="key" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste your key"></div>
+      <button type="submit" class="btn" style="align-self: flex-start">SAVE KEY</button>
+      ${state.tmdbError ? '<p class="hint error">That key didn\'t work. Check you copied the API Key (the shorter one).</p>' : ''}
+    </form>`;
+}
+
 function renderSubs() {
   const subs = mySubs();
   const count = SERVICES.filter((s) => accessTo(s.id, subs)).length;
@@ -712,7 +851,7 @@ function renderSubs() {
     <p class="hint">Tap the services you pay for, then any add-ons. Search and your guide will show what you can already watch.</p>
     <div class="section-title" style="font-size: 20px">${count} OF ${SERVICES.length} SERVICES</div>
     <div class="list">${cards}</div>
-    <p class="hint">"Where to watch" uses each show's home service, so a show may also stream in other places.</p>
+    ${renderTmdbSetup()}
   </section>`;
 }
 
@@ -841,6 +980,10 @@ document.addEventListener('click', (ev) => {
     subs.addons[el.dataset.key] = !subs.addons[el.dataset.key];
     saveSubs(subs);
     render();
+  } else if (action === 'tmdb-remove') {
+    try { localStorage.removeItem(TMDB_KEY); } catch (e) { /* ignore */ }
+    state.providers = {};
+    render();
   } else if (action === 'remove') {
     removeShow(Number(el.dataset.id));
   }
@@ -854,7 +997,28 @@ document.addEventListener('input', (ev) => {
   searchTimer = setTimeout(() => runSearch(q), 350);
 });
 
+async function saveTmdbKey(key) {
+  key = key.trim();
+  if (!key) return;
+  try {
+    await tmdb('/configuration', key);
+  } catch (e) {
+    state.tmdbError = true;
+    render();
+    return;
+  }
+  state.tmdbError = false;
+  try { localStorage.setItem(TMDB_KEY, key); } catch (e) { /* ignore */ }
+  state.providers = {};
+  render();
+}
+
 document.addEventListener('submit', (ev) => {
+  if (ev.target.dataset.action === 'tmdb-save') {
+    ev.preventDefault();
+    saveTmdbKey(ev.target.key.value);
+    return;
+  }
   if (ev.target.dataset.action !== 'search') return;
   ev.preventDefault();
   clearTimeout(searchTimer);
