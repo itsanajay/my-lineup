@@ -48,16 +48,50 @@ function readJSON(key, fallback) {
   }
 }
 
-function writeJSON(key, value) {
+const CACHE_KEYS = [CACHE_PREFIX, PROV_PREFIX, POOL_KEY];
+const isCacheKey = (key) => CACHE_KEYS.some((c) => key.startsWith(c));
+
+// Cached show data can always be fetched again, so it's what gets cleared to make room.
+function clearCaches() {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    Object.keys(localStorage).filter(isCacheKey).forEach((k) => localStorage.removeItem(k));
+  } catch (e) { /* ignore */ }
+}
+
+function writeJSON(key, value) {
+  const raw = JSON.stringify(value);
+  try {
+    localStorage.setItem(key, raw);
+    return true;
   } catch (e) {
-    // Storage full or blocked: the app still works for this visit.
+    // Storage full. A cache entry is just skipped; your own data clears the caches and tries again.
+    if (isCacheKey(key)) return false;
+  }
+  try {
+    clearCaches();
+    localStorage.setItem(key, raw);
+    return true;
+  } catch (e) {
+    return false;
   }
 }
 
+// Older versions cached every episode's full details, which could fill the phone's
+// storage for the app and quietly stop new shows from saving. Clear those once.
+const CACHE_VERSION = '2';
+try {
+  if (localStorage.getItem('lineup.cacheVersion') !== CACHE_VERSION) {
+    clearCaches();
+    localStorage.setItem('lineup.cacheVersion', CACHE_VERSION);
+  }
+} catch (e) { /* ignore */ }
+
+// If storage refuses a save, keep the list in memory so the app still works this visit
+// (and a signed-in account still gets the update).
+let memShows = null;
+
 function myShows() {
-  return readJSON(SHOWS_KEY, []);
+  return memShows || readJSON(SHOWS_KEY, []);
 }
 
 // Shows you follow fill the guide; watchlist titles wait in My Shows until you start them.
@@ -70,7 +104,7 @@ function watchlist() {
 }
 
 function saveMyShows(list) {
-  writeJSON(SHOWS_KEY, list);
+  memShows = writeJSON(SHOWS_KEY, list) ? null : list;
   queueSync();
 }
 
@@ -138,11 +172,29 @@ async function getJSON(path) {
   return res.json();
 }
 
+// Only the episode fields the guide uses, so long-running shows don't fill up storage.
+function slimEpisode(ep) {
+  return { season: ep.season, number: ep.number, name: ep.name, airdate: ep.airdate, airtime: ep.airtime, airstamp: ep.airstamp };
+}
+
+function slimFull(show) {
+  const emb = show._embedded || {};
+  const { _links, image, ...rest } = show;
+  return {
+    ...rest,
+    image: image ? { medium: image.medium, original: image.original } : null,
+    _embedded: {
+      episodes: (emb.episodes || []).map(slimEpisode),
+      nextepisode: emb.nextepisode ? slimEpisode(emb.nextepisode) : null,
+    },
+  };
+}
+
 async function loadShow(id, force) {
   const cached = readJSON(CACHE_PREFIX + id, null);
   if (cached && !force && Date.now() - cached.at < CACHE_MS) return cached.data;
   try {
-    const data = await getJSON('/shows/' + id + '?embed[]=episodes&embed[]=nextepisode');
+    const data = slimFull(await getJSON('/shows/' + id + '?embed[]=episodes&embed[]=nextepisode'));
     writeJSON(CACHE_PREFIX + id, { at: Date.now(), data });
     return data;
   } catch (e) {
@@ -903,7 +955,7 @@ async function pullAccount() {
     const local = myShows().map((x) => (byId[x.id] ? { ...byId[x.id], ...x } : x));
     const have = new Set(local.map((x) => x.id));
     const merged = local.concat(remote.filter((x) => !have.has(x.id)));
-    writeJSON(SHOWS_KEY, merged);
+    memShows = writeJSON(SHOWS_KEY, merged) ? null : merged;
     if (data.subs && data.subs.services) writeJSON(SUBS_KEY, data.subs);
   }
   await pushAccount();
