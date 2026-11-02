@@ -558,3 +558,11 @@ label.cap { font-size: 14px; font-weight: 700; letter-spacing: 1px; color: var(-
 .rd-info .pattern { color: var(--green); font-weight: 700; letter-spacing: .5px; font-size: 14px; }
 .btn.wide { width: 100%; }
 .rd-about { margin: 0; font-size: 17px; line-height: 1.35; }
+
+/* Watchlist: a second add button in search, and its own section in My Shows */
+.item-btns { display: flex; flex-direction: column; gap: 6px; flex: none; }
+.item-btns .btn { min-width: 118px; padding: 0 10px; }
+.item-btns.wide { flex-direction: row; }
+.item-btns.wide .btn { flex: 1; min-width: 0; }
+.btn.on-wl, .btn.on-wl:disabled { opacity: 1; border-color: var(--green); color: var(--green); }
+.wl-item { box-shadow: inset 4px 0 0 var(--yellow); }
