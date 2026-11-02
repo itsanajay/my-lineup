@@ -5,4 +5,6 @@
 window.LL_CONFIG = {
   supabaseUrl: 'https://axvnbcpqluwsuaqxbpfy.supabase.co',
   supabaseKey: 'sb_publishable_v9Si9nSBWdMQnozTc_rhhQ_pu_7vJVb',
+  // Turn on once Google is set up in Supabase (Authentication → Sign In / Providers → Google).
+  googleSignIn: false,
 };
