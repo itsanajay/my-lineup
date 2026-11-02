@@ -60,6 +60,15 @@ function myShows() {
   return readJSON(SHOWS_KEY, []);
 }
 
+// Shows you follow fill the guide; watchlist titles wait in My Shows until you start them.
+function following() {
+  return myShows().filter((s) => s.list !== 'watchlist');
+}
+
+function watchlist() {
+  return myShows().filter((s) => s.list === 'watchlist');
+}
+
 function saveMyShows(list) {
   writeJSON(SHOWS_KEY, list);
   queueSync();
@@ -221,7 +230,7 @@ function releasePattern(show) {
 // and move back into the guide once a new episode is dated.
 function returningSoon() {
   const soon = addDays(new Date(), 7);
-  return myShows()
+  return following()
     .map((s) => state.details[s.id])
     .filter((show) => show && !show.isMovie)
     .filter((show) => {
@@ -245,7 +254,7 @@ function returningSoon() {
 }
 
 function guideFor(day) {
-  const shows = myShows().map((s) => state.details[s.id]).filter(Boolean);
+  const shows = following().map((s) => state.details[s.id]).filter(Boolean);
   const platforms = {};
   shows.forEach((show) => { platforms[show.id] = platformFor(show); });
   const channels = [...new Set(shows.map((show) => platforms[show.id].name))].sort((a, b) => a.localeCompare(b));
@@ -375,7 +384,7 @@ function rankLike(genreCounts, channels, exclude, limit) {
 }
 
 function suggestedForYou() {
-  const tracked = myShows();
+  const tracked = following();
   const genreCounts = {};
   const channels = new Set();
   tracked.forEach((s) => {
@@ -384,7 +393,7 @@ function suggestedForYou() {
     (show.genres || []).forEach((g) => { genreCounts[g] = (genreCounts[g] || 0) + 1; });
     channels.add(channelOf(show));
   });
-  return rankLike(genreCounts, channels, new Set(tracked.map((s) => s.id)), 8);
+  return rankLike(genreCounts, channels, new Set(myShows().map((s) => s.id)), 8);
 }
 
 function moreLike(show, exclude) {
@@ -676,7 +685,7 @@ function releaseDay(r) {
 // Every release of the shows you follow, for the date bar dots and the calendar.
 function allReleases() {
   const out = [];
-  myShows().forEach((s) => {
+  following().forEach((s) => {
     const show = state.details[s.id];
     if (!show) return;
     const platform = platformFor(show);
@@ -703,7 +712,7 @@ function esc(s) {
 }
 
 function renderGuide() {
-  const list = myShows();
+  const list = following();
   if (!list.length) {
     return `
       <div class="empty">
@@ -1080,7 +1089,7 @@ function movieItem(m, tracked) {
         <span class="more">MORE INFO ›</span>
       </span>
     </button>
-    <button type="button" class="btn${added ? ' added' : ''}" data-action="add-movie" data-id="${m.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD'}</button>
+    ${listBtns('movie', m.id)}
   </div>`;
 }
 
@@ -1091,13 +1100,27 @@ function renderMovieResults(tracked) {
     <div class="list">${state.movieResults.map((m) => movieItem(m, tracked)).join('')}</div>`;
 }
 
-async function addMovie(tmdbId) {
+// Following something already on the watchlist moves it over instead of adding it twice.
+function promoteFromWatchlist(id) {
+  const list = myShows();
+  const cur = list.find((s) => s.id === id);
+  if (!cur) return false;
+  if (cur.list === 'watchlist') {
+    // 'follow' (not just dropping the flag) so a synced copy still marked watchlist doesn't win the merge.
+    saveMyShows(list.map((s) => (s.id === id ? { ...s, list: 'follow', status: s.status || 'watching', addedAt: ymd(new Date()) } : s)));
+    render();
+  }
+  return true;
+}
+
+async function addMovie(tmdbId, toWatchlist) {
   const m = (state.movieResults || []).find((x) => x.id === tmdbId);
   if (!m) return;
   const id = 'm' + tmdbId;
+  if (!toWatchlist && promoteFromWatchlist(id)) return;
   const list = myShows();
   if (list.some((s) => s.id === id)) return;
-  list.push({ id, name: m.title, channel: 'Movie', kind: 'movie', addedAt: ymd(new Date()) });
+  list.push({ id, name: m.title, channel: 'Movie', kind: 'movie', addedAt: ymd(new Date()), ...(toWatchlist ? { list: 'watchlist' } : {}) });
   saveMyShows(list);
   render();
   try {
@@ -1135,7 +1158,7 @@ function trackHtml(s) {
 // Everything the recap shows, worked out from your list for the current year.
 function recapData() {
   const year = new Date().getFullYear();
-  const list = myShows().filter((s) => !s.addedAt || Number(s.addedAt.slice(0, 4)) <= year);
+  const list = following().filter((s) => !s.addedAt || Number(s.addedAt.slice(0, 4)) <= year);
   const items = list.map((s) => ({ s, show: state.details[s.id] })).filter((x) => x.show);
   const count = (arr) => {
     const c = {};
@@ -1242,6 +1265,7 @@ function readBackup(code) {
         channel: typeof x.channel === 'string' ? x.channel : '',
         ...(isMovieId(x.id) ? { kind: 'movie' } : {}),
         ...(WATCH_STATES[x.status] ? { status: x.status } : {}),
+        ...(x.list === 'watchlist' ? { list: 'watchlist' } : {}),
         ...(Number.isInteger(x.rating) && x.rating >= 1 && x.rating <= 5 ? { rating: x.rating } : {}),
         ...(typeof x.addedAt === 'string' ? { addedAt: x.addedAt.slice(0, 10) } : {}),
       }));
@@ -1300,8 +1324,35 @@ function renderBackup(hasShows) {
   </section>`;
 }
 
+function renderWatchlist() {
+  const list = watchlist();
+  if (!list.length) return '';
+  const items = list.map((s) => {
+    const show = state.details[s.id];
+    return `<div class="item item-col wl-item">
+      <div class="item-top">
+        <div class="info">
+          <span class="t">${esc(s.name)}</span>
+          <span class="s">${esc(s.channel)}</span>
+          <span class="n">${esc(showStatus(show))}</span>
+          ${watchHtml(show)}
+        </div>
+      </div>
+      <div class="row-btns">
+        <button type="button" class="btn" data-action="wl-start" data-id="${s.id}">▶ START WATCHING</button>
+        <button type="button" class="btn ghost" data-action="remove" data-id="${s.id}" aria-label="Remove ${esc(s.name)} from watchlist">REMOVE</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `<section class="section" aria-label="Watchlist">
+    <div class="section-title">WATCHLIST</div>
+    <p class="hint">Saved for later. Start watching to add it to your guide.</p>
+    <div class="list">${items}</div>
+  </section>`;
+}
+
 function renderShows() {
-  const list = myShows();
+  const list = following();
   if (!list.length) {
     return `
       ${renderAccount()}
@@ -1310,7 +1361,8 @@ function renderShows() {
         <p class="hint">Add the shows you follow and we'll keep track of when new episodes drop.</p>
         <button class="btn" type="button" data-action="tab" data-tab="search">FIND A SHOW</button>
       </div>
-      ${renderBackup(false)}`;
+      ${renderWatchlist()}
+      ${renderBackup(myShows().length > 0)}`;
   }
   const items = list.map((s) => {
     const show = state.details[s.id];
@@ -1337,8 +1389,26 @@ function renderShows() {
       </button>
       <div class="section-title">MY SHOWS</div><div class="list">${items}</div>
     </section>
+    ${renderWatchlist()}
     ${renderBackup(true)}
     <div class="section"><p class="hint">Show data from <a href="https://www.tvmaze.com" style="color: var(--yellow)">TVmaze</a>.</p></div>`;
+}
+
+// Add buttons for a search result: follow it (fills the guide) or save it to the watchlist.
+let listed = new Map();
+function listBtns(kind, rawId, wide) {
+  const id = kind === 'movie' ? 'm' + rawId : rawId;
+  const entry = listed.get(id);
+  const addAction = kind === 'movie' ? 'add-movie' : 'add';
+  const cls = 'btn' + (wide ? ' wide' : '');
+  if (entry && entry.list !== 'watchlist') {
+    return `<div class="item-btns${wide ? ' wide' : ''}"><button type="button" class="${cls} added" disabled>✓ IN MY SHOWS</button></div>`;
+  }
+  const follow = `<button type="button" class="${cls}" data-action="${addAction}" data-id="${rawId}">${wide ? '+ ADD TO MY SHOWS' : '+ ADD'}</button>`;
+  const wl = entry
+    ? `<button type="button" class="${cls} ghost on-wl" disabled>✓ WATCHLIST</button>`
+    : `<button type="button" class="${cls} ghost" data-action="${addAction}" data-id="${rawId}" data-watchlist="1">+ WATCHLIST</button>`;
+  return `<div class="item-btns${wide ? ' wide' : ''}">${follow}${wl}</div>`;
 }
 
 function showItem(show, tracked) {
@@ -1359,7 +1429,7 @@ function showItem(show, tracked) {
         <span class="more">MORE INFO ›</span>
       </span>
     </button>
-    <button type="button" class="btn${added ? ' added' : ''}" data-action="add" data-id="${show.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD'}</button>
+    ${listBtns('show', show.id)}
   </div>`;
 }
 
@@ -1370,7 +1440,7 @@ function showList(title, shows, tracked) {
 }
 
 function renderSuggested(tracked) {
-  if (!myShows().length) return '';
+  if (!following().length) return '';
   if (!state.pool) return '<p class="hint">Finding shows you might like…</p>';
   const picks = suggestedForYou();
   if (!picks.length) return '';
@@ -1404,7 +1474,7 @@ function renderResultDetail(tracked) {
     about = m.overview || '';
     status = full ? showStatus(full) : 'Loading…';
     if (full) extra = watchHtml(full);
-    add = `<button type="button" class="btn wide${added ? ' added' : ''}" data-action="add-movie" data-id="${m.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD TO MY SHOWS'}</button>`;
+    add = listBtns('movie', m.id, true);
   } else {
     const show = findListedShow(o.id);
     if (!show) return `<section class="section">${back}<p class="hint">This show isn't in the results anymore.</p></section>`;
@@ -1416,7 +1486,7 @@ function renderResultDetail(tracked) {
     status = full ? showStatus(full) : 'Loading…';
     const pattern = full ? releasePattern(full) : '';
     extra = (pattern ? `<span class="pattern">${esc(pattern)}</span>` : '') + watchHtml(full || show);
-    add = `<button type="button" class="btn wide${added ? ' added' : ''}" data-action="add" data-id="${show.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD TO MY SHOWS'}</button>`;
+    add = listBtns('show', show.id, true);
   }
   return `<section class="section result-detail">
     ${back}
@@ -1461,7 +1531,9 @@ function closeResult() {
 }
 
 function renderSearch() {
-  const tracked = new Set(myShows().map((s) => s.id));
+  const all = myShows();
+  listed = new Map(all.map((s) => [s.id, s]));
+  const tracked = new Set(all.map((s) => s.id));
   if (state.open) return renderResultDetail(tracked);
   let results = '';
   if (!state.query.trim()) {
@@ -1697,12 +1769,13 @@ async function runSearch(q) {
   render();
 }
 
-async function addShow(id) {
+async function addShow(id, toWatchlist) {
   const found = (state.results || []).map((r) => r.show).concat(state.pool || []).find((show) => show.id === id);
   if (!found) return;
+  if (!toWatchlist && promoteFromWatchlist(id)) return;
   const list = myShows();
   if (list.some((s) => s.id === id)) return;
-  list.push({ id, name: found.name, channel: channelOf(found), addedAt: ymd(new Date()) });
+  list.push({ id, name: found.name, channel: channelOf(found), addedAt: ymd(new Date()), ...(toWatchlist ? { list: 'watchlist' } : {}) });
   saveMyShows(list);
   render();
   try {
@@ -1756,9 +1829,11 @@ document.addEventListener('click', (ev) => {
     state.picked = el.dataset.key;
     render();
   } else if (action === 'add') {
-    addShow(Number(el.dataset.id));
+    addShow(Number(el.dataset.id), !!el.dataset.watchlist);
   } else if (action === 'add-movie') {
-    addMovie(Number(el.dataset.id));
+    addMovie(Number(el.dataset.id), !!el.dataset.watchlist);
+  } else if (action === 'wl-start') {
+    promoteFromWatchlist(isMovieId(el.dataset.id) ? el.dataset.id : Number(el.dataset.id));
   } else if (action === 'open-result') {
     openResult(el.dataset.kind, Number(el.dataset.id));
   } else if (action === 'close-result') {
