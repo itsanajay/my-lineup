@@ -19,8 +19,9 @@ const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', '
 
 const state = {
   tab: 'guide',
-  weekOffset: 0,
   day: ymd(new Date()),
+  calOpen: false,
+  calMonth: null,    // first day of the month shown in the calendar
   picked: null,
   details: {},       // show id -> TVmaze show with embedded episodes
   loading: false,
@@ -82,12 +83,6 @@ function addDays(d, n) {
   return c;
 }
 
-function weekDays(offset) {
-  const today = new Date();
-  const monday = addDays(today, -((today.getDay() + 6) % 7) + offset * 7);
-  return Array.from({ length: 7 }, (_, i) => addDays(monday, i));
-}
-
 function hourLabel(h) {
   const suffix = h < 12 ? 'AM' : 'PM';
   return ((h + 11) % 12 + 1) + ' ' + suffix;
@@ -97,21 +92,24 @@ function shortDate(d) {
   return MONTHS[d.getMonth()] + ' ' + d.getDate();
 }
 
-// Streaming drops usually have no air time, so they land in the "NEW TODAY" slot
-// on their release date. Timed episodes use the viewer's local clock.
-function episodeDay(ep) {
-  if (!ep.airtime && ep.airdate) return ep.airdate;
-  if (ep.airstamp) return ymd(new Date(ep.airstamp));
-  return ep.airdate || null;
-}
-
-function episodeSlot(ep) {
-  if (!ep.airtime || !ep.airstamp) return 'new';
-  return new Date(ep.airstamp).getHours();
+function timeLabel(d) {
+  const h = d.getHours();
+  return ((h + 11) % 12 + 1) + ':' + pad(d.getMinutes()) + ' ' + (h < 12 ? 'AM' : 'PM');
 }
 
 function slotLabel(slot) {
   return slot === 'new' ? 'NEW TODAY' : hourLabel(slot);
+}
+
+// A wall-clock time in US Eastern on a given date, as a Date in the viewer's own time zone.
+function etDate(day, h, m) {
+  const [y, mo, d] = day.split('-').map(Number);
+  const guess = new Date(Date.UTC(y, mo - 1, d, h + 5, m));
+  const etHour = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' }).format(guess));
+  let diff = etHour - h;
+  if (diff > 12) diff -= 24;
+  if (diff < -12) diff += 24;
+  return new Date(guess.getTime() - diff * 3600000);
 }
 
 // ---------- data ----------
@@ -243,23 +241,32 @@ function returningSoon() {
 
 function guideFor(day) {
   const shows = myShows().map((s) => state.details[s.id]).filter(Boolean);
-  const channels = [...new Set(shows.map(channelOf))].sort((a, b) => a.localeCompare(b));
+  const platforms = {};
+  shows.forEach((show) => { platforms[show.id] = platformFor(show); });
+  const channels = [...new Set(shows.map((show) => platforms[show.id].name))].sort((a, b) => a.localeCompare(b));
 
   const entries = [];
   shows.forEach((show) => {
-    const todays = episodesOf(show).filter((ep) => episodeDay(ep) === day);
+    const platform = platforms[show.id];
     const bySlot = {};
-    todays.forEach((ep) => {
-      const slot = episodeSlot(ep);
-      (bySlot[slot] = bySlot[slot] || []).push(ep);
+    episodesOf(show).forEach((ep) => {
+      const r = releaseOf(ep, platform);
+      if (!r || releaseDay(r) !== day) return;
+      const slot = r.at ? r.at.getHours() : 'new';
+      (bySlot[slot] = bySlot[slot] || []).push({ ep, r });
     });
     Object.keys(bySlot).forEach((key) => {
-      const eps = bySlot[key].sort((a, b) => a.number - b.number);
-      const slot = key === 'new' ? 'new' : Number(key);
+      const items = bySlot[key].sort((a, b) => a.ep.number - b.ep.number);
+      const eps = items.map((x) => x.ep);
+      const r = items[0].r;
       entries.push({
         key: show.id + '|' + day + '|' + key,
-        channel: channelOf(show),
-        slot,
+        channel: platform.name,
+        slot: key === 'new' ? 'new' : Number(key),
+        at: r.at,
+        exact: r.exact,
+        tv: r.tv,
+        platform,
         title: show.name,
         code: epCode(eps),
         epName: eps.length === 1 ? eps[0].name : eps.length + ' episodes',
@@ -274,9 +281,9 @@ function guideFor(day) {
     if (hours.length < 3 && !hours.includes(h)) hours.push(h);
   });
   hours.sort((a, b) => a - b);
-  const slots = ['new', ...hours];
+  const slots = entries.some((e) => e.slot === 'new') ? ['new', ...hours] : hours;
 
-  // One row per channel; a second row for the same channel only when two shows share a slot.
+  // One row per service; a second row for the same service only when two shows share a slot.
   const rows = [];
   channels.forEach((channel, i) => {
     const num = pad(2 + i * 2);
@@ -613,6 +620,73 @@ function saveSubs(subs) {
   writeJSON(SUBS_KEY, subs);
 }
 
+// ---------- release times ----------
+
+// Usual time new episodes appear on each service, in US Eastern. TVmaze rarely
+// has a time for streaming drops, so these fill the gap and show as "~3:00 AM".
+const DROP_ET = {
+  netflix: [3, 0], hulu: [3, 0], max: [3, 0], disney: [3, 0],
+  peacock: [3, 0], paramount: [3, 0], apple: [0, 0], prime: [0, 0],
+};
+
+// The streaming service a show's guide row belongs to: one you have if TMDB lists
+// several, else its home service, else where its TV network streams next day.
+function platformFor(show) {
+  const channel = channelOf(show);
+  const home = SERVICES.find((s) => s.aliases.includes(channel)) || null;
+  const nextDay = !home && !!show.network;
+  let svc = null;
+  const providers = providersFor(show);
+  if (providers && providers.stream.length) {
+    const mapped = [...new Set(providers.stream.map(serviceForProvider).filter(Boolean))];
+    const subs = mySubs();
+    svc = mapped.find((m) => accessTo(m.id, subs)) || (home && mapped.includes(home) ? home : mapped[0]) || null;
+  }
+  if (!svc) svc = home || (NEXT_DAY[channel] ? SERVICES.find((s) => s.id === NEXT_DAY[channel]) : null);
+  if (!svc) return { name: channel, svc: null, nextDay: false, channel };
+  return { name: svc.name, svc, nextDay: nextDay && svc !== home, channel };
+}
+
+// When an episode goes live on its guide service. TV network shows land on their
+// streaming service the next day; timed streaming episodes keep TVmaze's time.
+function releaseOf(ep, platform) {
+  if (!ep.airdate) return null;
+  const timed = !!(ep.airtime && ep.airstamp);
+  const drop = platform.svc ? DROP_ET[platform.svc.id] || [3, 0] : null;
+  if (platform.nextDay && drop) {
+    const next = ymd(addDays(parseYmd(ep.airdate), 1));
+    return { at: etDate(next, drop[0], drop[1]), exact: false, tv: timed ? new Date(ep.airstamp) : null };
+  }
+  if (timed) return { at: new Date(ep.airstamp), exact: true, tv: null };
+  if (drop) return { at: etDate(ep.airdate, drop[0], drop[1]), exact: false, tv: null };
+  return { at: null, day: ep.airdate, exact: false, tv: null };
+}
+
+function releaseDay(r) {
+  return r.at ? ymd(r.at) : r.day;
+}
+
+// Every release of the shows you follow, for the date bar dots and the calendar.
+function allReleases() {
+  const out = [];
+  myShows().forEach((s) => {
+    const show = state.details[s.id];
+    if (!show) return;
+    const platform = platformFor(show);
+    episodesOf(show).forEach((ep) => {
+      const r = releaseOf(ep, platform);
+      if (r) out.push({ day: releaseDay(r), r, ep, show, platform });
+    });
+  });
+  return out;
+}
+
+function whenText(e) {
+  const d = e.at || parseYmd(state.day);
+  const day = DAY_NAMES[d.getDay()] + ', ' + shortDate(d);
+  return e.at ? day + ' · ' + (e.exact ? '' : '~') + timeLabel(e.at) : day;
+}
+
 // ---------- rendering ----------
 
 function esc(s) {
@@ -632,14 +706,24 @@ function renderGuide() {
       </div>`;
   }
 
-  const todayKey = ymd(new Date());
-  const days = weekDays(state.weekOffset);
-  const dayButtons = days.map((d) => {
+  const today = new Date();
+  const todayKey = ymd(today);
+  const selectedDate = parseYmd(state.day);
+  const releaseDays = new Set(allReleases().map((x) => x.day));
+  // A swipeable strip from two weeks back to a year ahead, stretched to reach any day picked in the calendar.
+  let first = addDays(today, -14);
+  let last = addDays(today, 365);
+  if (selectedDate < first) first = addDays(selectedDate, -14);
+  if (selectedDate > last) last = addDays(selectedDate, 30);
+  const dayButtons = [];
+  for (let d = first; d <= last; d = addDays(d, 1)) {
     const key = ymd(d);
     const cls = 'day' + (key === todayKey ? ' today' : '');
-    return `<button type="button" class="${cls}" aria-pressed="${key === state.day}" data-action="day" data-day="${key}" aria-label="${LONG_DAYS[d.getDay()]} ${shortDate(d)}">
-      <span class="d-short">${DAY_NAMES[d.getDay()]}</span><span class="d-num">${d.getDate()}</span></button>`;
-  }).join('');
+    const top = d.getDate() === 1 ? MONTHS[d.getMonth()] : DAY_NAMES[d.getDay()];
+    const dot = releaseDays.has(key) ? '<span class="dot" aria-hidden="true"></span>' : '';
+    dayButtons.push(`<button type="button" class="${cls}" aria-pressed="${key === state.day}" data-action="day" data-day="${key}" aria-label="${LONG_DAYS[d.getDay()]} ${shortDate(d)}${dot ? ', new episodes' : ''}">
+      <span class="d-short">${top}</span><span class="d-num">${d.getDate()}</span>${dot}</button>`);
+  }
 
   const { slots, rows, entries } = guideFor(state.day);
   let picked = entries.find((e) => e.key === state.picked) || entries[0] || null;
@@ -652,8 +736,9 @@ function renderGuide() {
       const e = row.cells[slot];
       if (!e) return '<div class="cell-empty">Nothing new</div>';
       const on = picked && picked.key === e.key;
+      const tm = e.at ? `<span class="tm">${e.exact ? '' : '~'}${timeLabel(e.at)}</span>` : '';
       return `<button type="button" class="cell" aria-pressed="${on}" data-action="pick" data-key="${esc(e.key)}">
-        <span class="t">${esc(e.title)}</span><span class="e">${esc(e.code)}</span></button>`;
+        <span class="t">${esc(e.title)}</span><span class="e">${esc(e.code)}</span>${tm}</button>`;
     }).join('');
     return `<div class="g-row"><div class="g-chan"><span class="num">${row.num}</span><span class="name">${esc(row.channel.toUpperCase())}</span></div>${cells}</div>`;
   }).join('');
@@ -661,8 +746,11 @@ function renderGuide() {
   const dayDate = parseYmd(state.day);
   const selected = picked
     ? `<section class="selected" aria-label="Selected show">
-        <span class="when">NEW ON ${esc(picked.channel.toUpperCase())} · ${DAY_NAMES[dayDate.getDay()]}${picked.slot === 'new' ? '' : ' ' + slotLabel(picked.slot)}</span>
+        <span class="when">NEW ON ${esc(picked.channel.toUpperCase())}</span>
         <span class="title">${esc(picked.title)}</span>
+        <span class="golive">Goes live ${esc(whenText(picked))}</span>
+        ${picked.at && !picked.exact ? `<span class="watch-note">Usual release time for ${esc(picked.channel)}, shown in your time zone</span>` : ''}
+        ${picked.tv ? `<span class="watch-note">Airs on ${esc(picked.platform.channel)} ${esc(DAY_NAMES[picked.tv.getDay()] + ' ' + timeLabel(picked.tv))}, then streams the next day</span>` : ''}
         <span class="ep">${esc(picked.code)}${picked.epName ? ' · ' + esc(picked.epName) : ''}</span>
         ${picked.pattern ? `<span class="pattern">${esc(picked.pattern)}</span>` : ''}
         ${watchHtml(picked.show)}
@@ -689,11 +777,7 @@ function renderGuide() {
       : '';
 
   return `
-    <nav class="week" aria-label="Day">
-      <button type="button" class="week-arrow" data-action="week" data-dir="-1" aria-label="Previous week">‹</button>
-      ${dayButtons}
-      <button type="button" class="week-arrow" data-action="week" data-dir="1" aria-label="Next week">›</button>
-    </nav>
+    <nav class="strip" id="strip" aria-label="Day">${dayButtons.join('')}</nav>
     <div class="grid-wrap"><div class="grid">${head}${body}</div></div>
     ${selected}
     ${status}
@@ -746,7 +830,7 @@ function showItem(show, tracked) {
     ? `<img src="${esc(show.image.medium)}" alt="" loading="lazy">`
     : '<div class="poster" aria-hidden="true"></div>';
   const genres = (show.genres || []).slice(0, 2).join(', ');
-  return `<div class="item">
+  return `<div class="item${added ? ' in-list' : ''}">
     ${img}
     <div class="info">
       <span class="t">${esc(show.name)}</span>
@@ -754,7 +838,7 @@ function showItem(show, tracked) {
       ${genres ? `<span class="s">${esc(genres)}</span>` : ''}
       ${watchHtml(show)}
     </div>
-    <button type="button" class="btn${added ? ' ghost' : ''}" data-action="add" data-id="${show.id}" ${added ? 'disabled' : ''}>${added ? 'ADDED' : '+ ADD'}</button>
+    <button type="button" class="btn${added ? ' added' : ''}" data-action="add" data-id="${show.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD'}</button>
   </div>`;
 }
 
@@ -855,6 +939,66 @@ function renderSubs() {
   </section>`;
 }
 
+function renderCalendar() {
+  const month = state.calMonth;
+  const y = month.getFullYear();
+  const m = month.getMonth();
+  const todayKey = ymd(new Date());
+  const releases = allReleases();
+  const releaseDays = new Set(releases.map((x) => x.day));
+  const firstDow = new Date(y, m, 1).getDay();
+  const daysIn = new Date(y, m + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push('<span class="cal-blank"></span>');
+  for (let d = 1; d <= daysIn; d++) {
+    const key = ymd(new Date(y, m, d));
+    const cls = 'cal-day' + (key === todayKey ? ' today' : '');
+    const dot = releaseDays.has(key) ? '<span class="dot" aria-hidden="true"></span>' : '';
+    cells.push(`<button type="button" class="${cls}" aria-pressed="${key === state.day}" data-action="cal-day" data-day="${key}">${d}${dot}</button>`);
+  }
+  const thisYear = new Date().getFullYear();
+  const monthOpts = MONTHS.map((name, i) => `<option value="${i}"${i === m ? ' selected' : ''}>${name}</option>`).join('');
+  const years = [];
+  for (let yr = Math.min(thisYear - 1, y); yr <= Math.max(thisYear + 5, y); yr++) years.push(yr);
+  const yearOpts = years.map((yr) => `<option value="${yr}"${yr === y ? ' selected' : ''}>${yr}</option>`).join('');
+
+  const prefix = y + '-' + pad(m + 1) + '-';
+  const inMonth = releases.filter((x) => x.day.startsWith(prefix)).sort((a, b) => a.day.localeCompare(b.day));
+  const seen = new Set();
+  const list = inMonth.filter((x) => {
+    const k = x.show.id + x.day;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).map((x) => {
+    const d = parseYmd(x.day);
+    return `<button type="button" class="cal-item" data-action="cal-day" data-day="${x.day}">
+      <span class="n">${DAY_NAMES[d.getDay()]} ${d.getDate()}</span>
+      <span class="t">${esc(x.show.name)}</span>
+      <span class="s">${esc(x.platform.name)} · S${x.ep.season} E${x.ep.number}</span>
+    </button>`;
+  }).join('');
+
+  return `<div class="cal-backdrop" data-action="cal-close"></div>
+    <div class="cal" role="dialog" aria-modal="true" aria-label="Pick a date">
+      <div class="cal-head">
+        <button type="button" class="week-arrow" data-action="cal-move" data-dir="-1" aria-label="Previous month">‹</button>
+        <label class="sr" for="cal-month">Month</label>
+        <select id="cal-month" class="cal-select">${monthOpts}</select>
+        <label class="sr" for="cal-year">Year</label>
+        <select id="cal-year" class="cal-select">${yearOpts}</select>
+        <button type="button" class="week-arrow" data-action="cal-move" data-dir="1" aria-label="Next month">›</button>
+      </div>
+      <div class="cal-grid">${DAY_NAMES.map((n) => `<span class="cal-dow">${n[0]}</span>`).join('')}${cells.join('')}</div>
+      <div class="section-title" style="font-size: 20px">${inMonth.length ? 'YOUR RELEASES IN ' + MONTHS[m] : 'NO RELEASES ANNOUNCED IN ' + MONTHS[m] + ' YET'}</div>
+      <div class="cal-list">${list}</div>
+      <div class="cal-actions">
+        <button type="button" class="btn ghost" data-action="cal-day" data-day="${todayKey}">TODAY</button>
+        <button type="button" class="btn" data-action="cal-close">CLOSE</button>
+      </div>
+    </div>`;
+}
+
 function render() {
   const view = document.getElementById('view');
   const hadFocus = document.activeElement && document.activeElement.id === 'q';
@@ -869,8 +1013,17 @@ function render() {
   });
 
   const d = parseYmd(state.day);
-  document.getElementById('top-date').textContent =
-    state.tab === 'guide' ? DAY_NAMES[d.getDay()] + ', ' + shortDate(d) : '';
+  const topDate = document.getElementById('top-date');
+  topDate.hidden = state.tab !== 'guide';
+  topDate.querySelector('span').textContent = shortDate(d);
+  topDate.setAttribute('aria-label', 'Pick a date, showing ' + LONG_DAYS[d.getDay()] + ' ' + shortDate(d));
+
+  document.getElementById('overlay').innerHTML = state.calOpen ? renderCalendar() : '';
+
+  // Keep the picked day in the middle of the date bar.
+  const strip = document.getElementById('strip');
+  const sel = strip && strip.querySelector('[aria-pressed="true"]');
+  if (sel) strip.scrollLeft = sel.offsetLeft - strip.clientWidth / 2 + sel.offsetWidth / 2;
 
   if (hadFocus) {
     const q = document.getElementById('q');
@@ -958,12 +1111,23 @@ document.addEventListener('click', (ev) => {
     state.day = el.dataset.day;
     state.picked = null;
     render();
-  } else if (action === 'week') {
-    state.weekOffset += Number(el.dataset.dir);
-    const days = weekDays(state.weekOffset);
-    const todayKey = ymd(new Date());
-    state.day = state.weekOffset === 0 && days.some((d) => ymd(d) === todayKey) ? todayKey : ymd(days[0]);
+  } else if (action === 'cal-open') {
+    const d = parseYmd(state.day);
+    state.calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+    state.calOpen = true;
+    render();
+  } else if (action === 'cal-move') {
+    const m = state.calMonth;
+    state.calMonth = new Date(m.getFullYear(), m.getMonth() + Number(el.dataset.dir), 1);
+    render();
+  } else if (action === 'cal-day') {
+    state.day = el.dataset.day;
     state.picked = null;
+    state.calOpen = false;
+    state.tab = 'guide';
+    render();
+  } else if (action === 'cal-close') {
+    state.calOpen = false;
     render();
   } else if (action === 'pick') {
     state.picked = el.dataset.key;
@@ -986,6 +1150,22 @@ document.addEventListener('click', (ev) => {
     render();
   } else if (action === 'remove') {
     removeShow(Number(el.dataset.id));
+  }
+});
+
+document.addEventListener('change', (ev) => {
+  if (ev.target.id === 'cal-month' || ev.target.id === 'cal-year') {
+    const month = Number(document.getElementById('cal-month').value);
+    const year = Number(document.getElementById('cal-year').value);
+    state.calMonth = new Date(year, month, 1);
+    render();
+  }
+});
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && state.calOpen) {
+    state.calOpen = false;
+    render();
   }
 });
 
