@@ -1179,12 +1179,12 @@ function renderShows() {
   const list = myShows();
   if (!list.length) {
     return `
+      ${renderAccount()}
       <div class="empty">
         <div class="big">NO SHOWS YET</div>
         <p class="hint">Add the shows you follow and we'll keep track of when new episodes drop.</p>
         <button class="btn" type="button" data-action="tab" data-tab="search">FIND A SHOW</button>
       </div>
-      ${renderAccount()}
       ${renderBackup(false)}`;
   }
   const items = list.map((s) => {
@@ -1200,9 +1200,9 @@ function renderShows() {
       <button type="button" class="btn ghost" data-action="remove" data-id="${s.id}" aria-label="Remove ${esc(s.name)}">REMOVE</button>
     </div>`;
   }).join('');
-  return `<section class="section"><div class="section-title">MY SHOWS</div><div class="list">${items}</div>
+  return `${renderAccount()}
+    <section class="section"><div class="section-title">MY SHOWS</div><div class="list">${items}</div>
     </section>
-    ${renderAccount()}
     ${renderBackup(true)}
     <div class="section"><p class="hint">Show data from <a href="https://www.tvmaze.com" style="color: var(--yellow)">TVmaze</a>.</p></div>`;
 }
