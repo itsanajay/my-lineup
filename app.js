@@ -60,6 +60,7 @@ function myShows() {
 
 function saveMyShows(list) {
   writeJSON(SHOWS_KEY, list);
+  queueSync();
 }
 
 // ---------- dates ----------
@@ -618,6 +619,7 @@ function watchHtml(show) {
 
 function saveSubs(subs) {
   writeJSON(SUBS_KEY, subs);
+  queueSync();
 }
 
 // ---------- release times ----------
@@ -796,6 +798,156 @@ function showStatus(show) {
   return 'Off-season · date TBA';
 }
 
+// ---------- account and sync (optional, Supabase) ----------
+
+// Signing in saves your shows and subscriptions to your account, so they follow
+// you to a new phone. Without settings in config.js the app stays phone-only.
+const CFG = window.LL_CONFIG || {};
+const accountsOn = !!(CFG.supabaseUrl && CFG.supabaseKey);
+let sb = null;
+let syncTimer = null;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = reject;
+    document.head.appendChild(el);
+  });
+}
+
+async function initAccounts() {
+  if (!accountsOn) return;
+  try {
+    await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js');
+    sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
+      auth: { persistSession: true, autoRefreshToken: true, storageKey: 'lineup.auth' },
+    });
+    const { data } = await sb.auth.getSession();
+    state.user = data.session ? data.session.user : null;
+    sb.auth.onAuthStateChange((_event, session) => {
+      const was = state.user && state.user.id;
+      state.user = session ? session.user : null;
+      if (state.user && state.user.id !== was) pullAccount();
+      render();
+    });
+    if (state.user) await pullAccount();
+  } catch (e) {
+    state.accountMsg = { error: true, text: "Couldn't reach your account. Your shows are still saved on this phone." };
+  }
+  render();
+}
+
+// Bring the account's copy onto this phone. Shows from both are kept; the
+// account's subscriptions win when it has any.
+async function pullAccount() {
+  if (!sb || !state.user) return;
+  state.syncing = true;
+  const { data, error } = await sb.from('lineups').select('shows, subs').eq('user_id', state.user.id).maybeSingle();
+  state.syncing = false;
+  if (error) {
+    state.accountMsg = { error: true, text: "Couldn't load your account. Try again in a moment." };
+    render();
+    return;
+  }
+  if (data) {
+    const local = myShows();
+    const have = new Set(local.map((x) => x.id));
+    const merged = local.concat((data.shows || []).filter((x) => x && x.id && !have.has(x.id)));
+    writeJSON(SHOWS_KEY, merged);
+    if (data.subs && data.subs.services) writeJSON(SUBS_KEY, data.subs);
+  }
+  await pushAccount();
+  render();
+  refreshAll();
+}
+
+async function pushAccount() {
+  if (!sb || !state.user) return;
+  const { error } = await sb.from('lineups').upsert({
+    user_id: state.user.id,
+    shows: myShows(),
+    subs: mySubs(),
+    updated_at: new Date().toISOString(),
+  });
+  state.lastSync = error ? null : new Date();
+  if (error) state.accountMsg = { error: true, text: "Couldn't save to your account. It's still saved on this phone." };
+}
+
+function queueSync() {
+  if (!sb || !state.user) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => pushAccount().then(render), 800);
+}
+
+async function accountSubmit(form, mode) {
+  const email = form.email.value.trim();
+  const password = form.password.value;
+  if (!email || password.length < 6) {
+    state.accountMsg = { error: true, text: 'Enter your email and a password of at least 6 characters.' };
+    render();
+    return;
+  }
+  state.accountBusy = true;
+  state.accountMsg = null;
+  render();
+  const res = mode === 'signup'
+    ? await sb.auth.signUp({ email, password })
+    : await sb.auth.signInWithPassword({ email, password });
+  state.accountBusy = false;
+  if (res.error) {
+    const m = res.error.message || '';
+    state.accountMsg = { error: true, text: /invalid login/i.test(m) ? 'That email and password don\'t match.' : /already registered/i.test(m) ? 'That email already has an account. Tap SIGN IN instead.' : m };
+  } else if (mode === 'signup' && !res.data.session) {
+    state.accountMsg = { error: false, text: 'Account made. Check your email to confirm it, then sign in.' };
+  } else {
+    state.accountMsg = { error: false, text: 'Signed in. Your shows now save to your account.' };
+  }
+  render();
+}
+
+async function signOut() {
+  if (!sb) return;
+  await pushAccount();
+  await sb.auth.signOut();
+  state.user = null;
+  state.accountMsg = { error: false, text: 'Signed out. Your shows stay on this phone too.' };
+  render();
+}
+
+function renderAccount() {
+  if (!accountsOn) return '';
+  const msg = state.accountMsg ? `<p class="hint${state.accountMsg.error ? ' error' : ''}">${esc(state.accountMsg.text)}</p>` : '';
+  if (!sb) {
+    return `<section class="section" aria-label="Account"><div class="section-title">ACCOUNT</div>${msg || '<p class="hint">Connecting…</p>'}</section>`;
+  }
+  if (state.user) {
+    const synced = state.syncing ? 'Syncing…' : state.lastSync ? 'Saved to your account ' + timeLabel(state.lastSync) : 'Saved to your account';
+    return `<section class="section" aria-label="Account">
+      <div class="section-title">ACCOUNT</div>
+      <p class="hint">Signed in as <strong>${esc(state.user.email || '')}</strong>. ${esc(synced)}.</p>
+      ${msg}
+      <div class="row-btns"><button type="button" class="btn ghost" data-action="sign-out">SIGN OUT</button></div>
+    </section>`;
+  }
+  return `<section class="section" aria-label="Account">
+    <div class="section-title">ACCOUNT</div>
+    <p class="hint">Sign in to save your shows and subscriptions to an account, so they follow you to any phone.</p>
+    <form class="list" data-action="account">
+      <label class="cap" for="acct-email">EMAIL</label>
+      <div class="search-box"><input id="acct-email" name="email" type="email" autocomplete="email" autocapitalize="off" spellcheck="false"></div>
+      <label class="cap" for="acct-pass">PASSWORD</label>
+      <div class="search-box"><input id="acct-pass" name="password" type="password" autocomplete="current-password" minlength="6"></div>
+      <div class="row-btns">
+        <button type="submit" class="btn" name="mode" value="signin" ${state.accountBusy ? 'disabled' : ''}>SIGN IN</button>
+        <button type="submit" class="btn ghost" name="mode" value="signup" ${state.accountBusy ? 'disabled' : ''}>CREATE ACCOUNT</button>
+      </div>
+    </form>
+    ${msg}
+  </section>`;
+}
+
 // ---------- backup ----------
 
 // Your shows and subscriptions as one copyable code, so a reinstall doesn't lose them.
@@ -877,6 +1029,7 @@ function renderShows() {
         <p class="hint">Add the shows you follow and we'll keep track of when new episodes drop.</p>
         <button class="btn" type="button" data-action="tab" data-tab="search">FIND A SHOW</button>
       </div>
+      ${renderAccount()}
       ${renderBackup(false)}`;
   }
   const items = list.map((s) => {
@@ -894,6 +1047,7 @@ function renderShows() {
   }).join('');
   return `<section class="section"><div class="section-title">MY SHOWS</div><div class="list">${items}</div>
     </section>
+    ${renderAccount()}
     ${renderBackup(true)}
     <div class="section"><p class="hint">Show data from <a href="https://www.tvmaze.com" style="color: var(--yellow)">TVmaze</a>.</p></div>`;
 }
@@ -1079,8 +1233,22 @@ function render() {
   const hadFocus = document.activeElement && document.activeElement.id === 'q';
   const caret = hadFocus ? document.activeElement.selectionStart : null;
 
+  // Keep anything typed into form boxes (sign-in, backup, TMDB key) across a redraw.
+  const kept = {};
+  view.querySelectorAll('input[id]:not(#q), textarea[id]').forEach((el) => { kept[el.id] = el.value; });
+  const focusedId = document.activeElement && document.activeElement.id;
+
   const views = { guide: renderGuide, shows: renderShows, search: renderSearch, subs: renderSubs };
   view.innerHTML = views[state.tab]();
+
+  Object.keys(kept).forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && !el.readOnly && kept[id]) el.value = kept[id];
+  });
+  if (focusedId && focusedId !== 'q' && kept[focusedId] !== undefined) {
+    const el = document.getElementById(focusedId);
+    if (el) el.focus();
+  }
 
   document.querySelectorAll('.tabs button').forEach((b) => {
     if (b.dataset.tab === state.tab) b.setAttribute('aria-current', 'page');
@@ -1225,6 +1393,8 @@ document.addEventListener('click', (ev) => {
     render();
   } else if (action === 'remove') {
     removeShow(Number(el.dataset.id));
+  } else if (action === 'sign-out') {
+    signOut();
   } else if (action === 'backup-copy') {
     copyBackup();
   } else if (action === 'restore-open') {
@@ -1280,6 +1450,12 @@ document.addEventListener('submit', (ev) => {
     saveTmdbKey(ev.target.key.value);
     return;
   }
+  if (ev.target.dataset.action === 'account') {
+    ev.preventDefault();
+    const mode = ev.submitter && ev.submitter.value === 'signup' ? 'signup' : 'signin';
+    accountSubmit(ev.target, mode);
+    return;
+  }
   if (ev.target.dataset.action === 'restore') {
     ev.preventDefault();
     restoreBackup(ev.target.code.value);
@@ -1293,6 +1469,7 @@ document.addEventListener('submit', (ev) => {
 
 render();
 refreshAll();
+initAccounts();
 
 // iPhone Safari ignores user-scalable=no in the browser, so block pinch zoom here too.
 document.addEventListener('gesturestart', (ev) => ev.preventDefault());
