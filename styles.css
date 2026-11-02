@@ -511,3 +511,50 @@ label.cap { font-size: 14px; font-weight: 700; letter-spacing: 1px; color: var(-
 .recap-nav .btn { flex: 1; }
 
 :focus-visible { outline: 3px solid var(--yellow); outline-offset: 2px; }
+
+/* Search results open into a details view with a back button */
+.item-open {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.item .more { font-size: 13px; font-weight: 700; letter-spacing: .5px; color: var(--yellow); margin-top: 2px; }
+.back-btn {
+  align-self: flex-start;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 2px solid var(--yellow);
+  border-radius: 4px;
+  background: none;
+  color: var(--yellow);
+  font-family: var(--pixel);
+  font-size: 22px;
+  cursor: pointer;
+}
+.result-detail { gap: 12px; }
+.rd-top { display: flex; gap: 14px; align-items: flex-start; }
+.rd-poster {
+  width: 120px;
+  height: 178px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 2px solid var(--yellow);
+  background: var(--blue-cell);
+}
+.rd-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.rd-title { margin: 0; font-size: 26px; font-weight: 700; line-height: 1.05; }
+.rd-info .s { font-size: 15px; color: var(--muted); }
+.rd-info .n { font-family: var(--pixel); font-size: 20px; color: var(--yellow); }
+.rd-info .pattern { color: var(--green); font-weight: 700; letter-spacing: .5px; font-size: 14px; }
+.btn.wide { width: 100%; }
+.rd-about { margin: 0; font-size: 17px; line-height: 1.35; }
