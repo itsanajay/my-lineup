@@ -863,9 +863,11 @@ async function pullAccount() {
     return;
   }
   if (data) {
-    const local = myShows();
+    const remote = (data.shows || []).filter((x) => x && x.id);
+    const byId = Object.fromEntries(remote.map((x) => [x.id, x]));
+    const local = myShows().map((x) => (byId[x.id] ? { ...byId[x.id], ...x } : x));
     const have = new Set(local.map((x) => x.id));
-    const merged = local.concat((data.shows || []).filter((x) => x && x.id && !have.has(x.id)));
+    const merged = local.concat(remote.filter((x) => !have.has(x.id)));
     writeJSON(SHOWS_KEY, merged);
     if (data.subs && data.subs.services) writeJSON(SUBS_KEY, data.subs);
   }
@@ -1090,7 +1092,7 @@ async function addMovie(tmdbId) {
   const id = 'm' + tmdbId;
   const list = myShows();
   if (list.some((s) => s.id === id)) return;
-  list.push({ id, name: m.title, channel: 'Movie', kind: 'movie' });
+  list.push({ id, name: m.title, channel: 'Movie', kind: 'movie', addedAt: ymd(new Date()) });
   saveMyShows(list);
   render();
   try {
@@ -1101,6 +1103,116 @@ async function addMovie(tmdbId) {
     state.loadError = true;
   }
   render();
+}
+
+// ---------- watch status, ratings and the yearly recap ----------
+
+const WATCH_STATES = { watching: 'WATCHING', finished: 'FINISHED', stopped: 'STOPPED' };
+
+function setTrack(id, patch) {
+  const list = myShows().map((s) => (String(s.id) === String(id) ? { ...s, ...patch } : s));
+  saveMyShows(list);
+  render();
+}
+
+function trackHtml(s) {
+  const id = esc(String(s.id));
+  const chips = Object.keys(WATCH_STATES).map((k) =>
+    `<button type="button" class="chip mini" aria-pressed="${s.status === k}" data-action="track" data-id="${id}" data-status="${k}">${WATCH_STATES[k]}</button>`).join('');
+  const stars = [1, 2, 3, 4, 5].map((n) =>
+    `<button type="button" class="star${(s.rating || 0) >= n ? ' on' : ''}" data-action="rate" data-id="${id}" data-rating="${n}" aria-label="Rate ${n} of 5" aria-pressed="${s.rating === n}">★</button>`).join('');
+  return `<div class="track">
+    <div class="chips" role="group" aria-label="Watch status for ${esc(s.name)}">${chips}</div>
+    <div class="stars" role="group" aria-label="Your rating for ${esc(s.name)}">${stars}</div>
+  </div>`;
+}
+
+// Everything the recap shows, worked out from your list for the current year.
+function recapData() {
+  const year = new Date().getFullYear();
+  const list = myShows().filter((s) => !s.addedAt || Number(s.addedAt.slice(0, 4)) <= year);
+  const items = list.map((s) => ({ s, show: state.details[s.id] })).filter((x) => x.show);
+  const count = (arr) => {
+    const c = {};
+    arr.forEach((k) => { if (k) c[k] = (c[k] || 0) + 1; });
+    return Object.entries(c).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  };
+  const services = count(items.map((x) => platformFor(x.show).name).filter((n) => n !== 'Movies' && n !== 'Other'));
+  const genres = count(items.flatMap((x) => x.show.genres || []));
+  const nights = count(items.flatMap((x) => episodesOf(x.show)
+    .filter((ep) => ep.airdate && ep.airdate.startsWith(String(year)))
+    .map((ep) => LONG_DAYS[parseYmd(ep.airdate).getDay()])));
+  const rated = list.filter((s) => s.rating).sort((a, b) => b.rating - a.rating || a.name.localeCompare(b.name));
+  return {
+    year,
+    shows: list.filter((s) => !isMovieId(s.id)).length,
+    movies: list.filter((s) => isMovieId(s.id)).length,
+    services,
+    genres,
+    nights,
+    rated,
+    finished: list.filter((s) => s.status === 'finished'),
+    stopped: list.filter((s) => s.status === 'stopped'),
+    watching: list.filter((s) => s.status === 'watching'),
+  };
+}
+
+function recapSlides() {
+  const d = recapData();
+  const slides = [];
+  slides.push(`<span class="k">LOCAL LISTINGS PRESENTS</span>
+    <span class="big">YOUR ${d.year}<br>RECAP</span>
+    <span class="s">${d.shows} show${d.shows === 1 ? '' : 's'}${d.movies ? ' and ' + d.movies + ' movie' + (d.movies === 1 ? '' : 's') : ''} in your lineup</span>`);
+  if (d.services.length) {
+    const top = d.services[0];
+    const least = d.services.length > 1 ? d.services[d.services.length - 1] : null;
+    slides.push(`<span class="k">YOUR NUMBER ONE CHANNEL</span>
+      <span class="big">${esc(top[0].toUpperCase())}</span>
+      <span class="s">${top[1]} of your shows live here</span>
+      ${least ? `<span class="small">Least tuned in: ${esc(least[0])} (${least[1]})</span>` : ''}`);
+  }
+  if (d.genres.length) {
+    slides.push(`<span class="k">YOUR TOP GENRES</span>
+      <ol class="rank">${d.genres.slice(0, 3).map(([g]) => `<li>${esc(g)}</li>`).join('')}</ol>`);
+  }
+  if (d.rated.length) {
+    slides.push(`<span class="k">YOUR TOP-RATED</span>
+      <ol class="rank">${d.rated.slice(0, 5).map((s) => `<li>${esc(s.name)} <span class="stars-txt">${'★'.repeat(s.rating)}</span></li>`).join('')}</ol>`);
+  } else {
+    slides.push(`<span class="k">YOUR TOP-RATED</span>
+      <span class="s">Rate your shows with stars in My Shows and your favorites will show up here.</span>`);
+  }
+  if (d.finished.length || d.stopped.length || d.watching.length) {
+    slides.push(`<span class="k">STAYED TUNED</span>
+      <span class="big">${d.finished.length} FINISHED</span>
+      <span class="s">${d.stopped.length} stopped · ${d.watching.length} still watching</span>
+      ${d.stopped.length ? `<span class="small">Changed the channel on: ${d.stopped.slice(0, 3).map((s) => esc(s.name)).join(', ')}</span>` : ''}`);
+  }
+  if (d.nights.length) {
+    slides.push(`<span class="k">YOUR BUSIEST NIGHT</span>
+      <span class="big">${esc(d.nights[0][0])}</span>
+      <span class="s">${d.nights[0][1]} new episodes landed on ${esc(d.nights[0][0].toLowerCase())}s this year</span>`);
+  }
+  slides.push(`<span class="k">THAT'S A WRAP</span>
+    <span class="big">SEE YOU<br>NEXT SEASON</span>
+    <span class="s">Stay tuned to Local Listings</span>`);
+  return slides;
+}
+
+function renderRecap() {
+  const slides = recapSlides();
+  const i = Math.min(state.recapSlide || 0, slides.length - 1);
+  const dots = slides.map((_, n) => `<span class="rdot${n === i ? ' on' : ''}"></span>`).join('');
+  const last = i === slides.length - 1;
+  return `<div class="recap" role="dialog" aria-modal="true" aria-label="Your recap">
+    <div class="recap-dots" aria-hidden="true">${dots}</div>
+    <button type="button" class="recap-close" data-action="recap-close" aria-label="Close recap">✕</button>
+    <div class="recap-card" aria-live="polite">${slides[i]}</div>
+    <div class="recap-nav">
+      <button type="button" class="btn ghost" data-action="recap-move" data-dir="-1" ${i === 0 ? 'disabled' : ''}>BACK</button>
+      <button type="button" class="btn" data-action="${last ? 'recap-close' : 'recap-move'}" data-dir="1">${last ? 'DONE' : 'NEXT'}</button>
+    </div>
+  </div>`;
 }
 
 // ---------- backup ----------
@@ -1119,7 +1231,15 @@ function readBackup(code) {
     const data = JSON.parse(decodeURIComponent(escape(atob(clean.slice(4)))));
     if (!Array.isArray(data.shows)) return null;
     const shows = data.shows.filter((x) => x && (Number.isInteger(x.id) || isMovieId(x.id)) && typeof x.name === 'string')
-      .map((x) => ({ id: x.id, name: x.name, channel: typeof x.channel === 'string' ? x.channel : '', ...(isMovieId(x.id) ? { kind: 'movie' } : {}) }));
+      .map((x) => ({
+        id: x.id,
+        name: x.name,
+        channel: typeof x.channel === 'string' ? x.channel : '',
+        ...(isMovieId(x.id) ? { kind: 'movie' } : {}),
+        ...(WATCH_STATES[x.status] ? { status: x.status } : {}),
+        ...(Number.isInteger(x.rating) && x.rating >= 1 && x.rating <= 5 ? { rating: x.rating } : {}),
+        ...(typeof x.addedAt === 'string' ? { addedAt: x.addedAt.slice(0, 10) } : {}),
+      }));
     const subs = data.subs && typeof data.subs.services === 'object' && typeof data.subs.addons === 'object' ? data.subs : null;
     return { shows, subs };
   } catch (e) {
@@ -1189,19 +1309,28 @@ function renderShows() {
   }
   const items = list.map((s) => {
     const show = state.details[s.id];
-    return `<div class="item">
-      <div class="info">
-        <span class="t">${esc(s.name)}</span>
-        <span class="s">${esc(s.channel)}</span>
-        <span class="n">${esc(showStatus(show))}</span>
-        ${watchHtml(show)}
-        ${show && releasePattern(show) ? `<span class="s pattern">${esc(releasePattern(show))}</span>` : ''}
+    return `<div class="item item-col">
+      <div class="item-top">
+        <div class="info">
+          <span class="t">${esc(s.name)}</span>
+          <span class="s">${esc(s.channel)}</span>
+          <span class="n">${esc(showStatus(show))}</span>
+          ${watchHtml(show)}
+          ${show && releasePattern(show) ? `<span class="s pattern">${esc(releasePattern(show))}</span>` : ''}
+        </div>
+        <button type="button" class="btn ghost" data-action="remove" data-id="${s.id}" aria-label="Remove ${esc(s.name)}">REMOVE</button>
       </div>
-      <button type="button" class="btn ghost" data-action="remove" data-id="${s.id}" aria-label="Remove ${esc(s.name)}">REMOVE</button>
+      ${trackHtml(s)}
     </div>`;
   }).join('');
   return `${renderAccount()}
-    <section class="section"><div class="section-title">MY SHOWS</div><div class="list">${items}</div>
+    <section class="section">
+      <button type="button" class="recap-btn" data-action="recap-open">
+        <span class="k">NOW PLAYING</span>
+        <span class="t">YOUR ${new Date().getFullYear()} RECAP</span>
+        <span class="s">Your top services, genres and shows</span>
+      </button>
+      <div class="section-title">MY SHOWS</div><div class="list">${items}</div>
     </section>
     ${renderBackup(true)}
     <div class="section"><p class="hint">Show data from <a href="https://www.tvmaze.com" style="color: var(--yellow)">TVmaze</a>.</p></div>`;
@@ -1418,7 +1547,7 @@ function render() {
   topDate.querySelector('span').textContent = shortDate(d);
   topDate.setAttribute('aria-label', 'Pick a date, showing ' + LONG_DAYS[d.getDay()] + ' ' + shortDate(d));
 
-  document.getElementById('overlay').innerHTML = state.calOpen ? renderCalendar() : '';
+  document.getElementById('overlay').innerHTML = state.calOpen ? renderCalendar() : state.recapOpen ? renderRecap() : '';
 
   // Keep the picked day in the middle of the date bar.
   const strip = document.getElementById('strip');
@@ -1482,7 +1611,7 @@ async function addShow(id) {
   if (!found) return;
   const list = myShows();
   if (list.some((s) => s.id === id)) return;
-  list.push({ id, name: found.name, channel: channelOf(found) });
+  list.push({ id, name: found.name, channel: channelOf(found), addedAt: ymd(new Date()) });
   saveMyShows(list);
   render();
   try {
@@ -1553,6 +1682,23 @@ document.addEventListener('click', (ev) => {
     render();
   } else if (action === 'remove') {
     removeShow(isMovieId(el.dataset.id) ? el.dataset.id : Number(el.dataset.id));
+  } else if (action === 'track') {
+    const cur = myShows().find((s) => String(s.id) === el.dataset.id);
+    setTrack(el.dataset.id, { status: cur && cur.status === el.dataset.status ? undefined : el.dataset.status });
+  } else if (action === 'rate') {
+    const cur = myShows().find((s) => String(s.id) === el.dataset.id);
+    const n = Number(el.dataset.rating);
+    setTrack(el.dataset.id, { rating: cur && cur.rating === n ? undefined : n });
+  } else if (action === 'recap-open') {
+    state.recapOpen = true;
+    state.recapSlide = 0;
+    render();
+  } else if (action === 'recap-move') {
+    state.recapSlide = Math.max(0, (state.recapSlide || 0) + Number(el.dataset.dir));
+    render();
+  } else if (action === 'recap-close') {
+    state.recapOpen = false;
+    render();
   } else if (action === 'google') {
     signInWithGoogle();
   } else if (action === 'sign-out') {
@@ -1576,8 +1722,9 @@ document.addEventListener('change', (ev) => {
 });
 
 document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && state.calOpen) {
+  if (ev.key === 'Escape' && (state.calOpen || state.recapOpen)) {
     state.calOpen = false;
+    state.recapOpen = false;
     render();
   }
 });
