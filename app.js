@@ -451,12 +451,14 @@ const SERVICES = [
       { id: 'paramount', label: 'Paramount+ channel' },
       { id: 'apple', label: 'Apple TV+ channel' },
       { id: 'peacock', label: 'Peacock channel' },
+      { id: 'crunchyroll', label: 'Crunchyroll channel' },
     ],
   },
   { id: 'disney', name: 'Disney+', aliases: ['Disney+'], addons: [{ id: 'hulu', label: 'Hulu bundle' }, { id: 'max', label: 'Max bundle' }] },
   { id: 'apple', name: 'Apple TV+', aliases: ['Apple TV+', 'Apple TV'], addons: [] },
   { id: 'peacock', name: 'Peacock', aliases: ['Peacock'], addons: [] },
   { id: 'paramount', name: 'Paramount+', aliases: ['Paramount+', 'CBS All Access', 'Showtime'], addons: [] },
+  { id: 'crunchyroll', name: 'Crunchyroll', aliases: ['Crunchyroll', 'Funimation'], addons: [] },
 ];
 
 // Where a TV network's shows usually stream the next day. Approximate: deals change.
@@ -467,6 +469,16 @@ const NEXT_DAY = {
   'Adult Swim': 'max', 'Cartoon Network': 'max', TLC: 'max', HGTV: 'max', 'Food Network': 'max', Discovery: 'max',
 };
 const BROADCAST = ['ABC', 'FOX', 'NBC', 'CBS'];
+
+// Japanese TV channels whose anime usually simulcasts on Crunchyroll about an hour
+// after it airs in Japan. Approximate: some shows go to Netflix or others instead,
+// and a TMDB key (My Subs) replaces this guess with real where-to-watch data.
+const SIMULCAST = {
+  'TV Tokyo': 'crunchyroll', 'Tokyo MX': 'crunchyroll', MBS: 'crunchyroll', 'Fuji TV': 'crunchyroll',
+  TBS: 'crunchyroll', 'Nippon TV': 'crunchyroll', 'TV Asahi': 'crunchyroll', 'AT-X': 'crunchyroll',
+  BS11: 'crunchyroll', ytv: 'crunchyroll', 'CBC TV': 'crunchyroll', 'ABC TV': 'crunchyroll',
+};
+const SIMULCAST_DELAY_MS = 60 * 60 * 1000;
 
 function mySubs() {
   return readJSON(SUBS_KEY, { services: {}, addons: {} });
@@ -565,6 +577,7 @@ const PROVIDER_WORDS = [
   ['peacock', /peacock/],
   ['disney', /disney/],
   ['prime', /amazon prime video|^prime video/],
+  ['crunchyroll', /crunchyroll|funimation/],
 ];
 
 function serviceForProvider(name) {
@@ -609,6 +622,9 @@ function homeWatchInfo(show) {
   if (!svc && NEXT_DAY[channel]) {
     svc = SERVICES.find((s) => s.id === NEXT_DAY[channel]);
     note = 'Airs on ' + channel + ' · streams next day on ' + svc.name;
+  } else if (!svc && SIMULCAST[channel]) {
+    svc = SERVICES.find((s) => s.id === SIMULCAST[channel]);
+    note = 'Airs in Japan on ' + channel + ' · simulcast on ' + svc.name;
   }
   if (!svc) return null;
   const subs = mySubs();
@@ -658,7 +674,8 @@ function platformFor(show) {
     const subs = mySubs();
     svc = mapped.find((m) => accessTo(m.id, subs)) || (home && mapped.includes(home) ? home : mapped[0]) || null;
   }
-  if (!svc) svc = home || (NEXT_DAY[channel] ? SERVICES.find((s) => s.id === NEXT_DAY[channel]) : null);
+  const guess = NEXT_DAY[channel] || SIMULCAST[channel];
+  if (!svc) svc = home || (guess ? SERVICES.find((s) => s.id === guess) : null);
   if (!svc) return { name: channel, svc: null, nextDay: false, channel };
   return { name: svc.name, svc, nextDay: nextDay && svc !== home, channel };
 }
@@ -668,6 +685,11 @@ function platformFor(show) {
 function releaseOf(ep, platform) {
   if (!ep.airdate) return null;
   const timed = !!(ep.airtime && ep.airstamp);
+  // Anime simulcasts land on Crunchyroll about an hour after the Japanese broadcast, not the next day.
+  if (platform.svc && platform.svc.id === 'crunchyroll') {
+    if (timed) return { at: new Date(new Date(ep.airstamp).getTime() + (platform.channel === 'Crunchyroll' ? 0 : SIMULCAST_DELAY_MS)), exact: platform.channel === 'Crunchyroll', tv: null };
+    return { at: null, day: ep.airdate, exact: false, tv: null };
+  }
   const drop = platform.svc ? DROP_ET[platform.svc.id] || [3, 0] : null;
   if (platform.nextDay && drop) {
     const next = ymd(addDays(parseYmd(ep.airdate), 1));
@@ -765,7 +787,9 @@ function renderGuide() {
         <span class="when">NEW ON ${esc(picked.channel.toUpperCase())}</span>
         <span class="title">${esc(picked.title)}</span>
         <span class="golive">Goes live ${esc(whenText(picked))}</span>
-        ${picked.at && !picked.exact ? `<span class="watch-note">Usual release time for ${esc(picked.channel)}, shown in your time zone</span>` : ''}
+        ${picked.at && !picked.exact ? `<span class="watch-note">${picked.platform && picked.platform.svc && picked.platform.svc.id === 'crunchyroll'
+          ? 'About an hour after it airs in Japan, shown in your time zone'
+          : 'Usual release time for ' + esc(picked.channel) + ', shown in your time zone'}</span>` : ''}
         ${picked.tv ? `<span class="watch-note">Airs on ${esc(picked.platform.channel)} ${esc(DAY_NAMES[picked.tv.getDay()] + ' ' + timeLabel(picked.tv))}, then streams the next day</span>` : ''}
         <span class="ep">${esc(picked.code)}${picked.epName ? ' · ' + esc(picked.epName) : ''}</span>
         ${picked.pattern ? `<span class="pattern">${esc(picked.pattern)}</span>` : ''}
