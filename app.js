@@ -149,7 +149,7 @@ async function refreshAll() {
   // TVmaze allows about 20 calls every 10 seconds, so load a few at a time.
   for (let i = 0; i < list.length; i += 4) {
     const batch = list.slice(i, i + 4);
-    const loaded = await Promise.allSettled(batch.map((s) => loadShow(s.id)));
+    const loaded = await Promise.allSettled(batch.map((s) => (isMovieId(s.id) ? loadMovie(s.id) : loadShow(s.id))));
     loaded.forEach((r, j) => {
       if (r.status === 'fulfilled') state.details[batch[j].id] = r.value;
       else state.loadError = true;
@@ -169,6 +169,7 @@ function episodesOf(show) {
 
 function epCode(eps) {
   const first = eps[0];
+  if (first.movie) return 'MOVIE';
   if (eps.length === 1) return 'S' + first.season + ' · E' + first.number;
   const last = eps[eps.length - 1];
   return 'S' + first.season + ' · E' + first.number + '–' + last.number;
@@ -198,6 +199,7 @@ function seasonPattern(eps) {
 // Uses the upcoming season when enough of it is dated, else the latest season
 // with dates, marked as last season's pattern.
 function releasePattern(show) {
+  if (show.isMovie) return null;
   const eps = episodesOf(show);
   if (!eps.length) return null;
   const next = nextEpisode(show);
@@ -219,7 +221,7 @@ function returningSoon() {
   const soon = addDays(new Date(), 7);
   return myShows()
     .map((s) => state.details[s.id])
-    .filter(Boolean)
+    .filter((show) => show && !show.isMovie)
     .filter((show) => {
       const next = nextEpisode(show);
       return !next || !next.airdate || parseYmd(next.airdate) > soon;
@@ -515,6 +517,7 @@ async function fetchProviders(show, key) {
 }
 
 function providersFor(show) {
+  if (show && show.isMovie) return show.providers && show.providers.stream.length ? show.providers : undefined;
   const key = tmdbKey();
   if (!key || !show || !show.externals) return undefined;
   if (show.id in state.providers) return state.providers[show.id];
@@ -788,6 +791,14 @@ function renderGuide() {
 
 function showStatus(show) {
   if (!show) return 'Loading…';
+  if (show.isMovie) {
+    if (show.streamDate) {
+      const d = parseYmd(show.streamDate);
+      if (d > new Date()) return 'Streams ' + DAY_NAMES[d.getDay()] + ' ' + shortDate(d) + (d.getFullYear() !== new Date().getFullYear() ? ', ' + d.getFullYear() : '');
+      return 'Streaming now';
+    }
+    return show.providers && show.providers.stream.length ? 'Streaming now' : 'Streaming date TBA';
+  }
   const next = nextEpisode(show);
   if (next && next.airdate) {
     const d = parseYmd(next.airdate);
@@ -948,6 +959,130 @@ function renderAccount() {
   </section>`;
 }
 
+// ---------- movies and one-off docs (TMDB) ----------
+
+// Movies are saved in the same list as shows, with ids like "m603692", so they
+// sync and back up the same way. They need a TMDB key; TVmaze only has series.
+function isMovieId(id) {
+  return typeof id === 'string' && /^m\d+$/.test(id);
+}
+
+const MOVIE_MS = 12 * 60 * 60 * 1000;
+
+// The day a movie goes up on streaming: TMDB's US "digital" release date,
+// else the earliest digital date anywhere.
+function streamingDate(m) {
+  const all = ((m.release_dates && m.release_dates.results) || []);
+  const pick = (list) => list.flatMap((c) => c.release_dates || []).filter((r) => r.type === 4)
+    .map((r) => r.release_date.slice(0, 10)).sort()[0] || null;
+  return pick(all.filter((c) => c.iso_3166_1 === 'US')) || pick(all);
+}
+
+function movieFromTmdb(m) {
+  const us = (m['watch/providers'] && m['watch/providers'].results && m['watch/providers'].results.US) || {};
+  const names = (list) => (list || []).map((p) => p.provider_name);
+  const providers = {
+    stream: [...new Set([...names(us.flatrate), ...names(us.ads), ...names(us.free)])],
+    buy: [...new Set([...names(us.buy), ...names(us.rent)])],
+  };
+  // Before it streams there are no providers yet, so the studio (e.g. Netflix) hints at the service.
+  const subs = mySubs();
+  const mapped = providers.stream.map(serviceForProvider).filter(Boolean);
+  let svc = mapped.find((x) => accessTo(x.id, subs)) || mapped[0] || null;
+  if (!svc) svc = (m.production_companies || []).map((c) => serviceForProvider(c.name || '')).find(Boolean) || null;
+  const streamDate = streamingDate(m);
+  return {
+    id: 'm' + m.id,
+    isMovie: true,
+    name: m.title,
+    genres: (m.genres || []).map((g) => g.name),
+    status: m.status,
+    premiered: m.release_date || null,
+    image: m.poster_path ? { medium: 'https://image.tmdb.org/t/p/w185' + m.poster_path } : null,
+    webChannel: { name: svc ? svc.name : 'Movies' },
+    network: null,
+    streamDate,
+    providers,
+    _embedded: {
+      episodes: streamDate ? [{ season: 0, number: 0, movie: true, name: 'Streaming premiere', airdate: streamDate, airtime: '', airstamp: null }] : [],
+      nextepisode: null,
+    },
+  };
+}
+
+async function loadMovie(id, force) {
+  const cached = readJSON(CACHE_PREFIX + id, null);
+  if (cached && !force && Date.now() - cached.at < MOVIE_MS) return cached.data;
+  const key = tmdbKey();
+  if (!key) {
+    if (cached) return cached.data;
+    throw new Error('No TMDB key');
+  }
+  try {
+    const m = await tmdb('/movie/' + id.slice(1) + '?append_to_response=release_dates,watch/providers', key);
+    const data = movieFromTmdb(m);
+    writeJSON(CACHE_PREFIX + id, { at: Date.now(), data });
+    return data;
+  } catch (e) {
+    if (cached) return cached.data;
+    throw e;
+  }
+}
+
+async function searchMovies(q) {
+  const key = tmdbKey();
+  if (!key) return null;
+  try {
+    const data = await tmdb('/search/movie?include_adult=false&query=' + encodeURIComponent(q), key);
+    return (data.results || []).slice(0, 6);
+  } catch (e) {
+    return null;
+  }
+}
+
+function movieItem(m, tracked) {
+  const id = 'm' + m.id;
+  const added = tracked.has(id);
+  const year = m.release_date ? m.release_date.slice(0, 4) : '';
+  const img = m.poster_path
+    ? `<img src="https://image.tmdb.org/t/p/w185${esc(m.poster_path)}" alt="" loading="lazy">`
+    : '<div class="poster" aria-hidden="true"></div>';
+  return `<div class="item${added ? ' in-list' : ''}">
+    ${img}
+    <div class="info">
+      <span class="t">${esc(m.title)}</span>
+      <span class="s">Movie${year ? ' · ' + year : ''}</span>
+    </div>
+    <button type="button" class="btn${added ? ' added' : ''}" data-action="add-movie" data-id="${m.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD'}</button>
+  </div>`;
+}
+
+function renderMovieResults(tracked) {
+  if (!tmdbKey()) return '<p class="hint" style="margin-top: 12px">Looking for a movie? Add a TMDB key in My Subs to search movies and docs too.</p>';
+  if (!state.movieResults || !state.movieResults.length) return '';
+  return `<div class="section-title" style="margin-top: 12px">MOVIES &amp; DOCS</div>
+    <div class="list">${state.movieResults.map((m) => movieItem(m, tracked)).join('')}</div>`;
+}
+
+async function addMovie(tmdbId) {
+  const m = (state.movieResults || []).find((x) => x.id === tmdbId);
+  if (!m) return;
+  const id = 'm' + tmdbId;
+  const list = myShows();
+  if (list.some((s) => s.id === id)) return;
+  list.push({ id, name: m.title, channel: 'Movie', kind: 'movie' });
+  saveMyShows(list);
+  render();
+  try {
+    state.details[id] = await loadMovie(id, true);
+    const keep = myShows().map((s) => (s.id === id ? { ...s, channel: state.details[id].webChannel.name } : s));
+    saveMyShows(keep);
+  } catch (e) {
+    state.loadError = true;
+  }
+  render();
+}
+
 // ---------- backup ----------
 
 // Your shows and subscriptions as one copyable code, so a reinstall doesn't lose them.
@@ -963,8 +1098,8 @@ function readBackup(code) {
   try {
     const data = JSON.parse(decodeURIComponent(escape(atob(clean.slice(4)))));
     if (!Array.isArray(data.shows)) return null;
-    const shows = data.shows.filter((x) => x && Number.isInteger(x.id) && typeof x.name === 'string')
-      .map((x) => ({ id: x.id, name: x.name, channel: typeof x.channel === 'string' ? x.channel : '' }));
+    const shows = data.shows.filter((x) => x && (Number.isInteger(x.id) || isMovieId(x.id)) && typeof x.name === 'string')
+      .map((x) => ({ id: x.id, name: x.name, channel: typeof x.channel === 'string' ? x.channel : '', ...(isMovieId(x.id) ? { kind: 'movie' } : {}) }));
     const subs = data.subs && typeof data.subs.services === 'object' && typeof data.subs.addons === 'object' ? data.subs : null;
     return { shows, subs };
   } catch (e) {
@@ -1097,19 +1232,21 @@ function renderSearch() {
     results = '<p class="hint error">Search isn\'t working right now. Check your connection and try again.</p>';
   } else if (state.results && !state.results.length) {
     const guesses = didYouMean(state.query);
-    results = guesses.length
+    const movies = renderMovieResults(tracked);
+    results = (guesses.length
       ? showList('DID YOU MEAN', guesses, tracked)
-      : '<p class="hint">No shows found. Try a different spelling.</p>';
+      : state.movieResults && state.movieResults.length ? '' : '<p class="hint">No shows found. Try a different spelling.</p>') + movies;
   } else if (state.results) {
     const shows = state.results.map((r) => r.show);
     const exclude = new Set([...tracked, ...shows.map((show) => show.id)]);
     results = '<div class="list">' + shows.map((show) => showItem(show, tracked)).join('') + '</div>' +
+      renderMovieResults(tracked) +
       showList('MORE LIKE ' + shows[0].name.toUpperCase(), moreLike(shows[0], exclude), tracked);
   }
   return `
     <section class="section">
       <form class="list" data-action="search" role="search">
-        <label class="cap" for="q">FIND A SHOW TO ADD</label>
+        <label class="cap" for="q">FIND A SHOW${tmdbKey() ? ' OR MOVIE' : ''} TO ADD</label>
         <div class="search-box">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffd23f" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
           <input id="q" type="search" name="q" placeholder="Type a title" autocomplete="off" value="${esc(state.query)}">
@@ -1204,7 +1341,7 @@ function renderCalendar() {
     return `<button type="button" class="cal-item" data-action="cal-day" data-day="${x.day}">
       <span class="n">${DAY_NAMES[d.getDay()]} ${d.getDate()}</span>
       <span class="t">${esc(x.show.name)}</span>
-      <span class="s">${esc(x.platform.name)} · S${x.ep.season} E${x.ep.number}</span>
+      <span class="s">${esc(x.platform.name)} · ${x.ep.movie ? 'Movie' : 'S' + x.ep.season + ' E' + x.ep.number}</span>
     </button>`;
   }).join('');
 
@@ -1308,9 +1445,10 @@ async function runSearch(q) {
   state.searchError = false;
   render();
   try {
-    const results = await searchShows(q.trim());
+    const [results, movies] = await Promise.all([searchShows(q.trim()), searchMovies(q.trim())]);
     if (seq !== searchSeq) return;
     state.results = results;
+    state.movieResults = movies;
   } catch (e) {
     if (seq !== searchSeq) return;
     state.searchError = true;
@@ -1377,6 +1515,8 @@ document.addEventListener('click', (ev) => {
     render();
   } else if (action === 'add') {
     addShow(Number(el.dataset.id));
+  } else if (action === 'add-movie') {
+    addMovie(Number(el.dataset.id));
   } else if (action === 'sub') {
     const subs = mySubs();
     subs.services[el.dataset.id] = !subs.services[el.dataset.id];
@@ -1392,7 +1532,7 @@ document.addEventListener('click', (ev) => {
     state.providers = {};
     render();
   } else if (action === 'remove') {
-    removeShow(Number(el.dataset.id));
+    removeShow(isMovieId(el.dataset.id) ? el.dataset.id : Number(el.dataset.id));
   } else if (action === 'sign-out') {
     signOut();
   } else if (action === 'backup-copy') {
