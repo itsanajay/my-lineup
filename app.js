@@ -820,7 +820,7 @@ function loadScript(src) {
 async function initAccounts() {
   if (!accountsOn) return;
   try {
-    await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js');
+    await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js');
     sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
       auth: { persistSession: true, autoRefreshToken: true, storageKey: 'lineup.auth' },
     });
