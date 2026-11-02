@@ -1161,7 +1161,7 @@ function recapSlides() {
   const d = recapData();
   const slides = [];
   slides.push(`<span class="k">LOCAL LISTINGS PRESENTS</span>
-    <span class="big">YOUR ${d.year}<br>RECAP</span>
+    <span class="big">YOUR ${d.year}<br>REWIND</span>
     <span class="s">${d.shows} show${d.shows === 1 ? '' : 's'}${d.movies ? ' and ' + d.movies + ' movie' + (d.movies === 1 ? '' : 's') : ''} in your lineup</span>`);
   if (d.services.length) {
     const top = d.services[0];
@@ -1204,9 +1204,9 @@ function renderRecap() {
   const i = Math.min(state.recapSlide || 0, slides.length - 1);
   const dots = slides.map((_, n) => `<span class="rdot${n === i ? ' on' : ''}"></span>`).join('');
   const last = i === slides.length - 1;
-  return `<div class="recap" role="dialog" aria-modal="true" aria-label="Your recap">
+  return `<div class="recap" role="dialog" aria-modal="true" aria-label="Your Rewind">
     <div class="recap-dots" aria-hidden="true">${dots}</div>
-    <button type="button" class="recap-close" data-action="recap-close" aria-label="Close recap">✕</button>
+    <button type="button" class="recap-close" data-action="recap-close" aria-label="Close Rewind">✕</button>
     <div class="recap-card" aria-live="polite">${slides[i]}</div>
     <div class="recap-nav">
       <button type="button" class="btn ghost" data-action="recap-move" data-dir="-1" ${i === 0 ? 'disabled' : ''}>BACK</button>
@@ -1326,8 +1326,8 @@ function renderShows() {
   return `${renderAccount()}
     <section class="section">
       <button type="button" class="recap-btn" data-action="recap-open">
-        <span class="k">NOW PLAYING</span>
-        <span class="t">YOUR ${new Date().getFullYear()} RECAP</span>
+        <span class="k">PRESS PLAY</span>
+        <span class="t">◀◀ YOUR ${new Date().getFullYear()} REWIND</span>
         <span class="s">Your top services, genres and shows</span>
       </button>
       <div class="section-title">MY SHOWS</div><div class="list">${items}</div>
