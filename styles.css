@@ -464,4 +464,6 @@ label.cap { font-size: 14px; font-weight: 700; letter-spacing: 1px; color: var(-
   user-select: text;
 }
 
+.google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; background: #ffffff; border-color: #ffffff; color: #1f1f1f; }
+
 :focus-visible { outline: 3px solid var(--yellow); outline-offset: 2px; }
