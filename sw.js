@@ -1,7 +1,7 @@
 // Lets Local Listings open from the home screen, even offline.
 // Network first so updates show up right away; the cache is the fallback.
-const CACHE = 'lineup-v4';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png'];
+const CACHE = 'lineup-v5';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
