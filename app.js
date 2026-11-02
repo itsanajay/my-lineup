@@ -796,6 +796,78 @@ function showStatus(show) {
   return 'Off-season · date TBA';
 }
 
+// ---------- backup ----------
+
+// Your shows and subscriptions as one copyable code, so a reinstall doesn't lose them.
+// The TMDB key is left out on purpose: it stays only on the device it was typed into.
+function backupCode() {
+  const data = { v: 1, shows: myShows(), subs: mySubs() };
+  return 'LL1-' + btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+}
+
+function readBackup(code) {
+  const clean = String(code || '').replace(/\s+/g, '');
+  if (!clean.startsWith('LL1-')) return null;
+  try {
+    const data = JSON.parse(decodeURIComponent(escape(atob(clean.slice(4)))));
+    if (!Array.isArray(data.shows)) return null;
+    const shows = data.shows.filter((x) => x && Number.isInteger(x.id) && typeof x.name === 'string')
+      .map((x) => ({ id: x.id, name: x.name, channel: typeof x.channel === 'string' ? x.channel : '' }));
+    const subs = data.subs && typeof data.subs.services === 'object' && typeof data.subs.addons === 'object' ? data.subs : null;
+    return { shows, subs };
+  } catch (e) {
+    return null;
+  }
+}
+
+function restoreBackup(code) {
+  const data = readBackup(code);
+  if (!data) {
+    state.backupMsg = { error: true, text: "That code didn't work. Copy the whole thing, starting with LL1-." };
+    render();
+    return;
+  }
+  const list = myShows();
+  const have = new Set(list.map((x) => x.id));
+  const added = data.shows.filter((x) => !have.has(x.id));
+  saveMyShows(list.concat(added));
+  if (data.subs) saveSubs(data.subs);
+  state.backupMsg = { error: false, text: 'Restored ' + added.length + (added.length === 1 ? ' show' : ' shows') + (data.subs ? ' and your subscriptions.' : '.') };
+  state.restoreOpen = false;
+  render();
+  refreshAll();
+}
+
+async function copyBackup() {
+  state.backupShown = backupCode();
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(state.backupShown);
+    copied = true;
+  } catch (e) { /* the code is shown below to copy by hand */ }
+  state.backupMsg = { error: false, text: copied ? 'Backup code copied. Paste it into Notes or a message to yourself.' : 'Press and hold the code below to copy it, then save it in Notes.' };
+  render();
+}
+
+function renderBackup(hasShows) {
+  const msg = state.backupMsg ? `<p class="hint${state.backupMsg.error ? ' error' : ''}">${esc(state.backupMsg.text)}</p>` : '';
+  const shown = state.backupShown ? `<textarea class="code-box" readonly aria-label="Backup code">${esc(state.backupShown)}</textarea>` : '';
+  const restore = state.restoreOpen ? `<form class="list" data-action="restore">
+      <label class="cap" for="restore-code">PASTE YOUR BACKUP CODE</label>
+      <textarea id="restore-code" name="code" class="code-box" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="LL1-..."></textarea>
+      <button type="submit" class="btn" style="align-self: flex-start">RESTORE</button>
+    </form>` : '';
+  return `<section class="section" aria-label="Backup">
+    <div class="section-title">BACKUP</div>
+    <p class="hint">Save a code with your shows and subscriptions, so you can put them back if you reinstall the app or switch phones.</p>
+    <div class="row-btns">
+      ${hasShows ? '<button type="button" class="btn" data-action="backup-copy">COPY BACKUP CODE</button>' : ''}
+      <button type="button" class="btn ghost" data-action="restore-open">RESTORE</button>
+    </div>
+    ${msg}${shown}${restore}
+  </section>`;
+}
+
 function renderShows() {
   const list = myShows();
   if (!list.length) {
@@ -804,7 +876,8 @@ function renderShows() {
         <div class="big">NO SHOWS YET</div>
         <p class="hint">Add the shows you follow and we'll keep track of when new episodes drop.</p>
         <button class="btn" type="button" data-action="tab" data-tab="search">FIND A SHOW</button>
-      </div>`;
+      </div>
+      ${renderBackup(false)}`;
   }
   const items = list.map((s) => {
     const show = state.details[s.id];
@@ -820,7 +893,9 @@ function renderShows() {
     </div>`;
   }).join('');
   return `<section class="section"><div class="section-title">MY SHOWS</div><div class="list">${items}</div>
-    <p class="hint">Show data from <a href="https://www.tvmaze.com" style="color: var(--yellow)">TVmaze</a>.</p></section>`;
+    </section>
+    ${renderBackup(true)}
+    <div class="section"><p class="hint">Show data from <a href="https://www.tvmaze.com" style="color: var(--yellow)">TVmaze</a>.</p></div>`;
 }
 
 function showItem(show, tracked) {
@@ -1150,6 +1225,12 @@ document.addEventListener('click', (ev) => {
     render();
   } else if (action === 'remove') {
     removeShow(Number(el.dataset.id));
+  } else if (action === 'backup-copy') {
+    copyBackup();
+  } else if (action === 'restore-open') {
+    state.restoreOpen = !state.restoreOpen;
+    state.backupMsg = null;
+    render();
   }
 });
 
@@ -1197,6 +1278,11 @@ document.addEventListener('submit', (ev) => {
   if (ev.target.dataset.action === 'tmdb-save') {
     ev.preventDefault();
     saveTmdbKey(ev.target.key.value);
+    return;
+  }
+  if (ev.target.dataset.action === 'restore') {
+    ev.preventDefault();
+    restoreBackup(ev.target.code.value);
     return;
   }
   if (ev.target.dataset.action !== 'search') return;
