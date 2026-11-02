@@ -33,6 +33,8 @@ const state = {
   providers: {},     // show id -> US streaming providers from TMDB, or null if none found
   pool: null,        // shows with new episodes this week, used for suggestions
   poolLoading: false,
+  open: null,        // search result being viewed: { kind: 'show' | 'movie', id }
+  openData: null,    // full details loaded for that result
 };
 
 // ---------- storage ----------
@@ -1070,11 +1072,14 @@ function movieItem(m, tracked) {
     ? `<img src="https://image.tmdb.org/t/p/w185${esc(m.poster_path)}" alt="" loading="lazy">`
     : '<div class="poster" aria-hidden="true"></div>';
   return `<div class="item${added ? ' in-list' : ''}">
-    ${img}
-    <div class="info">
-      <span class="t">${esc(m.title)}</span>
-      <span class="s">Movie${year ? ' · ' + year : ''}</span>
-    </div>
+    <button type="button" class="item-open" data-action="open-result" data-kind="movie" data-id="${m.id}" aria-label="More about ${esc(m.title)}">
+      ${img}
+      <span class="info">
+        <span class="t">${esc(m.title)}</span>
+        <span class="s">Movie${year ? ' · ' + year : ''}</span>
+        <span class="more">MORE INFO ›</span>
+      </span>
+    </button>
     <button type="button" class="btn${added ? ' added' : ''}" data-action="add-movie" data-id="${m.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD'}</button>
   </div>`;
 }
@@ -1344,13 +1349,16 @@ function showItem(show, tracked) {
     : '<div class="poster" aria-hidden="true"></div>';
   const genres = (show.genres || []).slice(0, 2).join(', ');
   return `<div class="item${added ? ' in-list' : ''}">
-    ${img}
-    <div class="info">
-      <span class="t">${esc(show.name)}</span>
-      <span class="s">${esc(channelOf(show))}${year ? ' · ' + year : ''}${show.status ? ' · ' + esc(show.status) : ''}</span>
-      ${genres ? `<span class="s">${esc(genres)}</span>` : ''}
-      ${watchHtml(show)}
-    </div>
+    <button type="button" class="item-open" data-action="open-result" data-kind="show" data-id="${show.id}" aria-label="More about ${esc(show.name)}">
+      ${img}
+      <span class="info">
+        <span class="t">${esc(show.name)}</span>
+        <span class="s">${esc(channelOf(show))}${year ? ' · ' + year : ''}${show.status ? ' · ' + esc(show.status) : ''}</span>
+        ${genres ? `<span class="s">${esc(genres)}</span>` : ''}
+        ${watchHtml(show)}
+        <span class="more">MORE INFO ›</span>
+      </span>
+    </button>
     <button type="button" class="btn${added ? ' added' : ''}" data-action="add" data-id="${show.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD'}</button>
   </div>`;
 }
@@ -1370,8 +1378,91 @@ function renderSuggested(tracked) {
     '<p class="hint">Based on the shows you follow, with new episodes this week.</p>';
 }
 
+// Shows the search screen can list: results plus this week's pool (suggestions, did-you-mean, more-like).
+function findListedShow(id) {
+  return (state.results || []).map((r) => r.show).concat(state.pool || []).find((show) => show.id === id) || null;
+}
+
+function plainText(html) {
+  const div = document.createElement('div');
+  div.innerHTML = html || '';
+  return (div.textContent || '').trim();
+}
+
+function renderResultDetail(tracked) {
+  const o = state.open;
+  const back = `<button type="button" class="back-btn" data-action="close-result">◀ BACK${state.query.trim() ? ' TO RESULTS' : ''}</button>`;
+  let title, meta, poster, about, add, full = state.openData, status = '', extra = '';
+  if (o.kind === 'movie') {
+    const m = (state.movieResults || []).find((x) => x.id === o.id);
+    if (!m) return `<section class="section">${back}<p class="hint">This movie isn't in the results anymore.</p></section>`;
+    const id = 'm' + m.id;
+    const added = tracked.has(id);
+    title = m.title;
+    meta = ['Movie', m.release_date ? m.release_date.slice(0, 4) : '', full && full.genres.length ? full.genres.slice(0, 3).join(', ') : ''].filter(Boolean).join(' · ');
+    poster = m.poster_path ? `https://image.tmdb.org/t/p/w342${m.poster_path}` : '';
+    about = m.overview || '';
+    status = full ? showStatus(full) : 'Loading…';
+    if (full) extra = watchHtml(full);
+    add = `<button type="button" class="btn wide${added ? ' added' : ''}" data-action="add-movie" data-id="${m.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD TO MY SHOWS'}</button>`;
+  } else {
+    const show = findListedShow(o.id);
+    if (!show) return `<section class="section">${back}<p class="hint">This show isn't in the results anymore.</p></section>`;
+    const added = tracked.has(show.id);
+    title = show.name;
+    meta = [channelOf(show), show.premiered ? show.premiered.slice(0, 4) : '', show.status || '', (show.genres || []).slice(0, 3).join(', ')].filter(Boolean).join(' · ');
+    poster = show.image ? show.image.original || show.image.medium : '';
+    about = plainText(show.summary);
+    status = full ? showStatus(full) : 'Loading…';
+    const pattern = full ? releasePattern(full) : '';
+    extra = (pattern ? `<span class="pattern">${esc(pattern)}</span>` : '') + watchHtml(full || show);
+    add = `<button type="button" class="btn wide${added ? ' added' : ''}" data-action="add" data-id="${show.id}" ${added ? 'disabled' : ''}>${added ? '✓ IN MY SHOWS' : '+ ADD TO MY SHOWS'}</button>`;
+  }
+  return `<section class="section result-detail">
+    ${back}
+    <div class="rd-top">
+      ${poster ? `<img class="rd-poster" src="${esc(poster)}" alt="">` : '<div class="rd-poster" aria-hidden="true"></div>'}
+      <div class="rd-info">
+        <h2 class="rd-title">${esc(title)}</h2>
+        <span class="s">${esc(meta)}</span>
+        <span class="n">${esc(status)}</span>
+        ${extra}
+      </div>
+    </div>
+    ${add}
+    ${about ? `<p class="rd-about">${esc(about)}</p>` : ''}
+  </section>`;
+}
+
+async function openResult(kind, id) {
+  const view = document.getElementById('view');
+  state.openScroll = view ? view.scrollTop : 0;
+  state.open = { kind, id };
+  state.openData = null;
+  try { history.pushState({ llResult: true }, ''); } catch (e) { /* ignore */ }
+  render();
+  if (view) view.scrollTop = 0;
+  try {
+    const data = kind === 'movie' ? await loadMovie('m' + id) : await loadShow(id);
+    if (state.open && state.open.kind === kind && state.open.id === id) {
+      state.openData = data;
+      render();
+    }
+  } catch (e) { /* the basics from the search result still show */ }
+}
+
+function closeResult() {
+  if (!state.open) return;
+  state.open = null;
+  state.openData = null;
+  render();
+  const view = document.getElementById('view');
+  if (view) view.scrollTop = state.openScroll || 0;
+}
+
 function renderSearch() {
   const tracked = new Set(myShows().map((s) => s.id));
+  if (state.open) return renderResultDetail(tracked);
   let results = '';
   if (!state.query.trim()) {
     results = renderSuggested(tracked);
@@ -1634,6 +1725,8 @@ document.addEventListener('click', (ev) => {
   if (!el || el.tagName === 'FORM') return;
   const action = el.dataset.action;
   if (action === 'tab') {
+    state.open = null;
+    state.openData = null;
     state.tab = el.dataset.tab;
     render();
     if (state.tab === 'search' && !state.pool) loadPool();
@@ -1666,6 +1759,11 @@ document.addEventListener('click', (ev) => {
     addShow(Number(el.dataset.id));
   } else if (action === 'add-movie') {
     addMovie(Number(el.dataset.id));
+  } else if (action === 'open-result') {
+    openResult(el.dataset.kind, Number(el.dataset.id));
+  } else if (action === 'close-result') {
+    if (history.state && history.state.llResult) history.back();
+    else closeResult();
   } else if (action === 'sub') {
     const subs = mySubs();
     subs.services[el.dataset.id] = !subs.services[el.dataset.id];
@@ -1710,6 +1808,11 @@ document.addEventListener('click', (ev) => {
     state.backupMsg = null;
     render();
   }
+});
+
+// The phone's own back gesture or button returns to the results too.
+window.addEventListener('popstate', () => {
+  if (state.open) closeResult();
 });
 
 document.addEventListener('change', (ev) => {
