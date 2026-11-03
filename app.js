@@ -785,6 +785,108 @@ function esc(s) {
   }[c]));
 }
 
+// ---------- sample ads (testing only) ----------
+
+// Fake promos so testers can feel how the planned ad slots fit the app. Nothing here
+// is a real sponsor, and the buttons don't do anything beyond saying so.
+const AD_KEY = 'lineup.adTest';
+const AD_MODES = { auto: 'AUTO-ROTATE', coming: 'COMING UP BOX', row: 'SPONSORED ROW', off: 'OFF' };
+const SAMPLE_PROMOS = [
+  { title: 'Midnight Harbor', kind: 'All-new drama', service: 'peacock', ticker: 'ALL-NEW FRIDAY 3 AM' },
+  { title: 'The Long Game', kind: 'Season 2', service: 'max', ticker: 'SEASON 2 STARTS DEC 4' },
+  { title: 'Static Nights', kind: 'New comedy', service: 'netflix', ticker: 'EVERY EPISODE THURSDAY' },
+  { title: 'Paper Moons', kind: 'Limited series', service: 'apple', ticker: 'PREMIERES THIS WEEK' },
+];
+
+function adMode() {
+  try { return AD_MODES[localStorage.getItem(AD_KEY)] ? localStorage.getItem(AD_KEY) : 'auto'; } catch (e) { return 'auto'; }
+}
+
+// Auto mode swaps the Coming Up box and the sponsored row every 3 hours, so both
+// show up several times a day. The ticker is always on, as in the ad plan.
+function adSlot() {
+  const mode = adMode();
+  if (mode === 'off') return null;
+  if (mode !== 'auto') return mode;
+  return Math.floor(new Date().getHours() / 3) % 2 === 0 ? 'coming' : 'row';
+}
+
+function samplePromo() {
+  const start = new Date(new Date().getFullYear(), 0, 0);
+  const dayOfYear = Math.floor((new Date() - start) / 86400000);
+  return SAMPLE_PROMOS[dayOfYear % SAMPLE_PROMOS.length];
+}
+
+function promoService(p) {
+  return SERVICES.find((x) => x.id === p.service);
+}
+
+function renderComingUpAd() {
+  const p = samplePromo();
+  const svc = promoService(p);
+  const d = addDays(new Date(), 3);
+  return `<section class="section" aria-label="Sample ad">
+    <div class="ad-coming">
+      <div class="ad-inner">
+        <div class="ad-head"><span class="ad-k">★ COMING UP</span><span class="ad-tag dark">SAMPLE AD</span></div>
+        <span class="ad-title">${esc(p.title.toUpperCase())}</span>
+        <span class="ad-sub">${esc(p.kind)} · Premieres ${DAY_NAMES[d.getDay()]} 3 AM on ${esc(svc.name)}</span>
+        <div class="ad-btns">
+          <button type="button" class="ad-btn solid" data-action="ad-tap">+ ADD TO MY SHOWS</button>
+          <button type="button" class="ad-btn" data-action="ad-tap">WATCH TRAILER</button>
+        </div>
+        ${state.adNote ? '<span class="ad-note">Sample ad for testing. In the real app this button works.</span>' : ''}
+      </div>
+    </div>
+  </section>`;
+}
+
+function promoRow(slotCount) {
+  const p = samplePromo();
+  const width = `calc(${slotCount} * var(--slot) + ${slotCount - 1} * 2px)`;
+  return `<div class="g-row promo-row">
+    <div class="g-chan promo-chan"><span class="num">PROMO</span><span class="name">SAMPLE AD</span></div>
+    <button type="button" class="promo-cell" style="width: ${width}" data-action="ad-open" aria-pressed="${!!state.adOpen}">
+      <span class="pc-text"><span class="pc-t">${esc(p.title.toUpperCase())}</span><span class="pc-s">Series premiere · 3:00 AM</span></span>
+      <span class="pc-add">+ ADD</span>
+    </button>
+  </div>`;
+}
+
+function renderPromoDetails() {
+  const p = samplePromo();
+  const svc = promoService(p);
+  const access = accessTo(svc.id, mySubs());
+  return `<section class="promo-box" aria-label="Sample sponsored show">
+    <div class="promo-poster" aria-hidden="true"><span>${esc(p.title.toUpperCase())}</span></div>
+    <div class="promo-info">
+      <span class="ad-tag">SAMPLE AD · SPONSORED</span>
+      <span class="when">NEW ON ${esc(svc.name.toUpperCase())}</span>
+      <span class="title">${esc(p.title)}</span>
+      <span class="golive">Goes live TODAY · 3:00 AM</span>
+      <span class="watch ${access ? 'yes' : 'no'}">${access ? '✓ YOU HAVE IT' : '✕ NOT IN YOUR SUBS'}</span>
+      ${access ? '' : `<button type="button" class="ad-btn trial" data-action="ad-tap">START FREE TRIAL ›</button>
+      <span class="watch-note">Affiliate link · we may earn a commission</span>`}
+      ${state.adNote ? '<span class="watch-note">Sample ad for testing. In the real app this button works.</span>' : ''}
+    </div>
+  </section>`;
+}
+
+function renderTicker() {
+  const items = SAMPLE_PROMOS.map((p) => `<span>★ ${esc(p.title.toUpperCase())} · ${esc(p.ticker)}</span>`).join('');
+  return `<span class="tk-label">PROMO</span>
+    <div class="tk-track"><div class="tk-run">${items}${items}</div></div>`;
+}
+
+function renderAdSettings() {
+  const mode = adMode();
+  const chips = Object.keys(AD_MODES).map((k) =>
+    `<button type="button" class="chip mini" aria-pressed="${mode === k}" data-action="ad-mode" data-mode="${k}">${AD_MODES[k]}</button>`).join('');
+  return `<div class="section-title" style="margin-top: 12px">SAMPLE ADS (TESTING)</div>
+    <p class="hint">Fake promos to test how ads feel. The ticker is always on. Auto-rotate swaps the Coming Up box and the sponsored row every 3 hours.</p>
+    <div class="chips" role="group" aria-label="Sample ads">${chips}</div>`;
+}
+
 function renderGuide() {
   const list = following();
   if (!list.length) {
@@ -833,8 +935,12 @@ function renderGuide() {
     return `<div class="g-row"><div class="g-chan"><span class="num">${row.num}</span><span class="name">${esc(row.channel.toUpperCase())}</span></div>${cells}</div>`;
   }).join('');
 
+  // Sample sponsored row: only on today's guide, like a real premiere-day booking.
+  const slot = adSlot();
+  const showRow = slot === 'row' && state.day === todayKey;
+
   const dayDate = parseYmd(state.day);
-  const selected = picked
+  const selected = showRow && state.adOpen ? renderPromoDetails() : picked
     ? `<section class="selected" aria-label="Selected show">
         <span class="when">NEW ON ${esc(picked.channel.toUpperCase())}</span>
         <span class="title">${esc(picked.title)}</span>
@@ -870,9 +976,10 @@ function renderGuide() {
 
   return `
     <nav class="strip" id="strip" aria-label="Day">${dayButtons.join('')}</nav>
-    <div class="grid-wrap"><div class="grid">${head}${body}</div></div>
+    <div class="grid-wrap"><div class="grid">${head}${body}${showRow ? promoRow(slots.length) : ''}</div></div>
     ${selected}
     ${status}
+    ${slot === 'coming' ? renderComingUpAd() : ''}
     ${renderCatchUp()}
     ${shelfHtml}`;
 }
@@ -1760,6 +1867,7 @@ function renderSubs() {
     <div class="section-title" style="font-size: 20px">${count} OF ${SERVICES.length} SERVICES</div>
     <div class="list">${cards}</div>
     ${renderTmdbSetup()}
+    ${renderAdSettings()}
   </section>`;
 }
 
@@ -1855,6 +1963,13 @@ function render() {
   topDate.hidden = state.tab !== 'guide';
   topDate.querySelector('span').textContent = shortDate(d);
   topDate.setAttribute('aria-label', 'Pick a date, showing ' + LONG_DAYS[d.getDay()] + ' ' + shortDate(d));
+
+  const ticker = document.getElementById('ticker');
+  if (ticker) {
+    const showTicker = state.tab === 'guide' && adMode() !== 'off';
+    ticker.hidden = !showTicker;
+    if (showTicker && !ticker.firstChild) ticker.innerHTML = renderTicker();
+  }
 
   document.getElementById('overlay').innerHTML = state.calOpen ? renderCalendar() : state.recapOpen ? renderRecap() : '';
 
@@ -1973,6 +2088,17 @@ document.addEventListener('click', (ev) => {
     render();
   } else if (action === 'pick') {
     state.picked = el.dataset.key;
+    state.adOpen = false;
+    render();
+  } else if (action === 'ad-open') {
+    state.adOpen = !state.adOpen;
+    state.adNote = false;
+    render();
+  } else if (action === 'ad-tap') {
+    state.adNote = true;
+    render();
+  } else if (action === 'ad-mode') {
+    try { localStorage.setItem(AD_KEY, el.dataset.mode); } catch (e) { /* ignore */ }
     render();
   } else if (action === 'add') {
     addShow(Number(el.dataset.id), !!el.dataset.watchlist);
