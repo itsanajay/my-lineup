@@ -873,7 +873,76 @@ function renderGuide() {
     <div class="grid-wrap"><div class="grid">${head}${body}</div></div>
     ${selected}
     ${status}
+    ${renderCatchUp()}
     ${shelfHtml}`;
+}
+
+// ---------- catch up ----------
+
+// Episodes of shows you follow that have come out but you haven't marked watched.
+// "upTo" on a show remembers the last episode you watched (or skipped), in order.
+const CATCHUP_DAYS = 30;
+const epOrder = (ep) => (ep.season || 0) * 10000 + (ep.number || 0);
+
+function catchUpList() {
+  const now = new Date();
+  const windowStart = addDays(now, -CATCHUP_DAYS);
+  const entries = Object.fromEntries(following().map((s) => [String(s.id), s]));
+  const byShow = {};
+  allReleases().forEach((x) => {
+    const s = entries[String(x.show.id)];
+    if (!s || s.status === 'stopped' || s.status === 'finished') return;
+    const when = x.r.at || parseYmd(x.day);
+    if (when > now || when < windowStart) return;
+    // Don't dump a whole back catalog on a show you just added.
+    if (s.addedAt && when < addDays(parseYmd(s.addedAt), -7)) return;
+    if (Number.isInteger(s.upTo) && epOrder(x.ep) <= s.upTo) return;
+    const key = String(s.id);
+    if (!byShow[key]) byShow[key] = { s, platform: x.platform, eps: [] };
+    byShow[key].eps.push({ ep: x.ep, when });
+  });
+  return Object.values(byShow)
+    .map((g) => ({ ...g, eps: g.eps.sort((a, b) => epOrder(a.ep) - epOrder(b.ep)) }))
+    .sort((a, b) => a.eps[0].when - b.eps[0].when);
+}
+
+function agoLabel(d) {
+  const days = Math.round((parseYmd(ymd(new Date())) - parseYmd(ymd(d))) / 86400000);
+  if (days <= 0) return 'TODAY';
+  if (days === 1) return 'YESTERDAY';
+  return DAY_NAMES[d.getDay()] + ' ' + shortDate(d);
+}
+
+function renderCatchUp() {
+  if (!following().length || state.loading) return '';
+  const list = catchUpList();
+  const cards = list.map((g) => {
+    const first = g.eps[0];
+    const last = g.eps[g.eps.length - 1];
+    const more = g.eps.length - 1;
+    const id = esc(String(g.s.id));
+    const code = first.ep.movie ? 'MOVIE' : 'S' + first.ep.season + ' · E' + first.ep.number;
+    const name = first.ep.name && !first.ep.movie ? ' · ' + esc(first.ep.name) : '';
+    return `<div class="cu-card">
+      <div class="cu-top">
+        <div class="cu-info">
+          <span class="t">${esc(g.s.name)}</span>
+          <span class="s">${esc(code)}${name}</span>
+          <span class="cu-when">${esc(g.platform.name.toUpperCase())} · ${esc(agoLabel(first.when))}${more ? ' · +' + more + ' MORE' : ''}</span>
+        </div>
+        <button type="button" class="cu-x" data-action="cu-skip" data-id="${id}" data-upto="${epOrder(last.ep)}" aria-label="Dismiss ${esc(g.s.name)}">✕</button>
+      </div>
+      <div class="cu-btns">
+        <button type="button" class="btn" data-action="cu-watched" data-id="${id}" data-upto="${epOrder(first.ep)}">✓ WATCHED</button>
+        ${more ? `<button type="button" class="btn ghost" data-action="cu-watched" data-id="${id}" data-upto="${epOrder(last.ep)}">✓ ALL ${g.eps.length}</button>` : ''}
+        <button type="button" class="cu-drop" data-action="cu-drop" data-id="${id}">NOT INTO IT</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `<section class="section" aria-label="Catch up on">
+    <div class="section-title">CATCH UP ON</div>
+    ${cards || '<p class="hint">You\'re all caught up ✓</p>'}
+  </section>`;
 }
 
 function showStatus(show) {
@@ -1342,6 +1411,7 @@ function readBackup(code) {
         ...(isMovieId(x.id) ? { kind: 'movie' } : {}),
         ...(WATCH_STATES[x.status] ? { status: x.status } : {}),
         ...(x.list === 'watchlist' ? { list: 'watchlist' } : {}),
+        ...(Number.isInteger(x.upTo) ? { upTo: x.upTo } : {}),
         ...(Number.isInteger(x.rating) && x.rating >= 1 && x.rating <= 5 ? { rating: x.rating } : {}),
         ...(typeof x.addedAt === 'string' ? { addedAt: x.addedAt.slice(0, 10) } : {}),
       }));
@@ -1908,6 +1978,13 @@ document.addEventListener('click', (ev) => {
     addShow(Number(el.dataset.id), !!el.dataset.watchlist);
   } else if (action === 'add-movie') {
     addMovie(Number(el.dataset.id), !!el.dataset.watchlist);
+  } else if (action === 'cu-watched' || action === 'cu-skip') {
+    const cur = myShows().find((s) => String(s.id) === el.dataset.id);
+    const patch = { upTo: Number(el.dataset.upto) };
+    if (action === 'cu-watched' && cur && !cur.status) patch.status = 'watching';
+    setTrack(el.dataset.id, patch);
+  } else if (action === 'cu-drop') {
+    setTrack(el.dataset.id, { status: 'stopped' });
   } else if (action === 'wl-start') {
     promoteFromWatchlist(isMovieId(el.dataset.id) ? el.dataset.id : Number(el.dataset.id));
   } else if (action === 'open-result') {
