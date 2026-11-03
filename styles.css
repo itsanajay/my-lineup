@@ -584,3 +584,58 @@ label.cap { font-size: 14px; font-weight: 700; letter-spacing: 1px; color: var(-
   color: var(--muted); font: inherit; font-size: 13px; font-weight: 700; letter-spacing: .5px;
   text-decoration: underline; cursor: pointer;
 }
+
+/* Sample ads (testing only): Coming Up box, sponsored grid row + poster box, ticker */
+.ad-tag { align-self: flex-start; font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--navy); background: var(--yellow); padding: 1px 6px; border-radius: 2px; }
+.ad-tag.dark { background: none; color: var(--navy); border: 1.5px solid var(--navy); }
+.ad-coming { border: 3px double var(--yellow); background: var(--yellow); color: var(--navy); border-radius: 4px; padding: 4px; }
+.ad-inner { border: 2px solid var(--navy); border-radius: 2px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.ad-head { display: flex; justify-content: space-between; align-items: center; }
+.ad-k { font-family: var(--pixel); font-size: 24px; line-height: 1; }
+.ad-title { font-size: 28px; font-weight: 700; line-height: 1; }
+.ad-sub { font-size: 16px; font-weight: 600; }
+.ad-btns { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.ad-btn {
+  min-height: 44px; padding: 0 14px; border-radius: 4px; border: 2px solid var(--navy);
+  background: none; color: var(--navy); font: inherit; font-size: 15px; font-weight: 700; letter-spacing: .5px; cursor: pointer;
+}
+.ad-btn.solid { background: var(--navy); color: var(--yellow); }
+.ad-note { font-size: 13px; font-weight: 600; }
+
+.promo-row { background: var(--navy); }
+.promo-chan { background: var(--yellow) !important; color: var(--navy); }
+.promo-chan .num { color: var(--navy) !important; }
+.promo-chan .name { font-size: 11px !important; letter-spacing: 1px; }
+.promo-cell {
+  flex: none; min-height: 52px; padding: 6px 10px; border: 0; border-radius: 0;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: repeating-linear-gradient(45deg, var(--yellow) 0 10px, #ffe27a 10px 20px);
+  color: var(--navy); text-align: left; cursor: pointer;
+  outline: 3px solid var(--text); outline-offset: -3px;
+}
+.promo-cell[aria-pressed="true"] { outline-color: var(--navy); }
+.pc-text { display: flex; flex-direction: column; min-width: 0; }
+.pc-t { font-size: 18px; font-weight: 700; line-height: 1; white-space: nowrap; }
+.pc-s { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.pc-add { flex: none; font-family: var(--pixel); font-size: 20px; background: var(--navy); color: var(--yellow); padding: 4px 8px; border-radius: 3px; }
+
+.promo-box { margin: 12px 16px 0; padding: 12px; background: var(--blue); border: 2px solid var(--yellow); border-radius: 4px; display: flex; gap: 12px; }
+.promo-poster {
+  flex: none; width: 104px; height: 156px; border-radius: 3px; border: 2px solid var(--yellow);
+  background: linear-gradient(160deg, #2a4fb8 0%, #081640 70%), var(--blue-cell);
+  display: flex; align-items: flex-end; padding: 8px; color: var(--yellow);
+  font-family: var(--pixel); font-size: 20px; line-height: 1;
+}
+.promo-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.promo-info .when { font-size: 13px; font-weight: 700; letter-spacing: 1px; color: var(--muted); }
+.promo-info .title { font-size: 22px; font-weight: 700; line-height: 1; }
+.promo-info .golive { font-family: var(--pixel); font-size: 20px; color: var(--yellow); line-height: 1; }
+.ad-btn.trial { align-self: flex-start; border-color: var(--yellow); color: var(--yellow); }
+
+.ticker { display: flex; align-items: stretch; min-height: 44px; background: var(--yellow); color: var(--navy); border-top: 3px solid var(--navy); flex: none; }
+.ticker[hidden] { display: none; }
+.tk-label { flex: none; display: flex; align-items: center; padding: 0 10px; background: var(--navy); color: var(--yellow); font-family: var(--pixel); font-size: 20px; letter-spacing: 1px; }
+.tk-track { flex: 1; min-width: 0; overflow: hidden; display: flex; align-items: center; }
+.tk-run { display: flex; gap: 40px; padding-left: 16px; white-space: nowrap; font-size: 16px; font-weight: 700; letter-spacing: .5px; animation: tk-scroll 30s linear infinite; }
+@keyframes tk-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) { .tk-run { animation: none; } }
