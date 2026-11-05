@@ -791,11 +791,12 @@ function esc(s) {
 // is a real sponsor, and the buttons don't do anything beyond saying so.
 const AD_KEY = 'lineup.adTest';
 const AD_MODES = { auto: 'AUTO-ROTATE', coming: 'COMING UP BOX', row: 'SPONSORED ROW', off: 'OFF' };
+// Placeholder titles only, so nobody mistakes a sample for a real show.
 const SAMPLE_PROMOS = [
-  { title: 'Midnight Harbor', kind: 'All-new drama', service: 'peacock', ticker: 'ALL-NEW FRIDAY 3 AM' },
-  { title: 'The Long Game', kind: 'Season 2', service: 'max', ticker: 'SEASON 2 STARTS DEC 4' },
-  { title: 'Static Nights', kind: 'New comedy', service: 'netflix', ticker: 'EVERY EPISODE THURSDAY' },
-  { title: 'Paper Moons', kind: 'Limited series', service: 'apple', ticker: 'PREMIERES THIS WEEK' },
+  { title: 'Sample Show A', kind: 'New drama', service: 'peacock', ticker: 'NEW EPISODES FRIDAY' },
+  { title: 'Sample Show B', kind: 'Season 2', service: 'max', ticker: 'NEW SEASON STARTS SOON' },
+  { title: 'Sample Movie', kind: 'New movie', service: 'netflix', ticker: 'STREAMING THIS WEEK' },
+  { title: 'Sample Docuseries', kind: 'Limited series', service: 'apple', ticker: 'ALL EPISODES THURSDAY' },
 ];
 
 function adMode() {
@@ -1040,8 +1041,7 @@ function renderCatchUp() {
         <button type="button" class="cu-x" data-action="cu-skip" data-id="${id}" data-upto="${epOrder(last.ep)}" aria-label="Dismiss ${esc(g.s.name)}">✕</button>
       </div>
       <div class="cu-btns">
-        <button type="button" class="btn" data-action="cu-watched" data-id="${id}" data-upto="${epOrder(first.ep)}">✓ WATCHED</button>
-        ${more ? `<button type="button" class="btn ghost" data-action="cu-watched" data-id="${id}" data-upto="${epOrder(last.ep)}">✓ ALL ${g.eps.length}</button>` : ''}
+        <button type="button" class="btn" data-action="cu-watched" data-id="${id}" data-upto="${epOrder(last.ep)}">✓ WATCHED</button>
         <button type="button" class="cu-drop" data-action="cu-drop" data-id="${id}">NOT INTO IT</button>
       </div>
     </div>`;
