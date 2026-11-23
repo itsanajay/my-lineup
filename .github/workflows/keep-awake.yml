@@ -1,0 +1,121 @@
+# Daily health check for Local Listings.
+#
+# 1. Opens the live app to make sure it loads.
+# 2. Runs a tiny real query against the Supabase database. Free Supabase
+#    projects pause after 7 days with no activity; this daily query counts as
+#    activity, so the project stays awake.
+# 3. If anything is down, the run fails and an issue is opened and assigned to
+#    the repo owner, so GitHub emails them. The issue closes itself on the next
+#    good run.
+#
+# Only uses the public values already in config.js, so no secrets are needed.
+
+name: Daily health check
+
+on:
+  schedule:
+    - cron: '17 14 * * *' # every day around 14:17 UTC
+  workflow_dispatch: # lets you run it by hand from the Actions tab
+  pull_request:
+    paths:
+      - '.github/workflows/keep-awake.yml'
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+concurrency:
+  group: keep-awake
+  cancel-in-progress: false
+
+env:
+  APP_URL: https://itsanajay.github.io/my-lineup/
+  ISSUE_TITLE: 'Local Listings is down (daily health check)'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Supabase settings from config.js
+        run: |
+          url=$(grep -oE "supabaseUrl: *'[^']+'" config.js | sed -E "s/.*'([^']+)'/\1/")
+          key=$(grep -oE "supabaseKey: *'[^']+'" config.js | sed -E "s/.*'([^']+)'/\1/")
+          if [ -z "$url" ] || [ -z "$key" ]; then
+            echo "::error::Could not find supabaseUrl/supabaseKey in config.js"; exit 1
+          fi
+          echo "SB_URL=$url" >> "$GITHUB_ENV"
+          echo "SB_KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Check the app loads
+        id: app
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -sS -L -o page.html -w '%{http_code}' --max-time 30 "$APP_URL" || echo 000)
+            if [ "$code" = 200 ] && grep -qi '<html' page.html; then
+              echo "App is up ($code)"; exit 0
+            fi
+            echo "Attempt $i: app returned $code"; sleep 20
+          done
+          echo "::error::The app at $APP_URL is not loading (last status $code)"; exit 1
+
+      - name: Query the database (keeps Supabase awake)
+        id: db
+        if: always()
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -sS -o db.json -w '%{http_code}' --max-time 30 \
+              "$SB_URL/rest/v1/lineups?select=updated_at&limit=1" \
+              -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" || echo 000)
+            if [ "$code" = 200 ]; then
+              echo "Database answered ($code)"; exit 0
+            fi
+            echo "Attempt $i: database returned $code: $(head -c 300 db.json 2>/dev/null)"; sleep 20
+          done
+          echo "::error::The Supabase database did not answer (last status $code). If it says paused, restore it at https://supabase.com/dashboard"; exit 1
+
+      - name: Keep this schedule from being switched off
+        # GitHub turns off scheduled runs after 60 days with no commits.
+        # Re-enabling the workflow resets that timer.
+        if: always() && github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/keep-awake.yml/enable"
+
+      - name: Open an issue so the owner gets an email
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_RESULT: ${{ steps.app.outcome }}
+          DB_RESULT: ${{ steps.db.outcome }}
+        run: |
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          body="The daily health check failed on $(date -u '+%Y-%m-%d %H:%M UTC').
+
+          - App ($APP_URL): $APP_RESULT
+          - Database (Supabase): $DB_RESULT
+
+          If the database is paused, open https://supabase.com/dashboard and tap Restore project.
+
+          Details: $run_url
+
+          This issue closes itself the next time the check passes."
+          existing=$(gh issue list -R "${{ github.repository }}" --state open --search "in:title \"$ISSUE_TITLE\"" --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create -R "${{ github.repository }}" --title "$ISSUE_TITLE" --body "$body" --assignee "${{ github.repository_owner }}"
+          fi
+
+      - name: Close the issue when things are back
+        if: success() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for n in $(gh issue list -R "${{ github.repository }}" --state open --search "in:title \"$ISSUE_TITLE\"" --json number -q '.[].number'); do
+            gh issue close "$n" -R "${{ github.repository }}" --comment "Health check passed again. Closing."
+          done
